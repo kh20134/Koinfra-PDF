@@ -1,0 +1,89 @@
+Koinfra PDF Edit - 아이콘 출처 및 라이선스
+==========================================
+
+1) 툴바/메뉴 아이콘 (icons/*.png, icons/svg/*.svg)
+   출처: Lucide Icons v1.73.0 (lucide-static, https://lucide.dev , https://github.com/lucide-icons/lucide)
+   라이선스: ISC License (일부 아이콘은 Feather Icons 파생, MIT License)
+   변경 사항: 선 색상 재지정, stroke-width 2 -> 1.75, PNG(16~64px)로 래스터화
+
+   매핑 (코드 키 <- Lucide 아이콘 이름):
+  open            <- lucide "folder-open"  (#334155)
+  save            <- lucide "save"  (#334155)
+  print           <- lucide "printer"  (#334155)
+  merge           <- lucide "files"  (#334155)
+  extract         <- lucide "file-up"  (#334155)
+  insert          <- lucide "file-plus"  (#334155)
+  lock            <- lucide "lock"  (#334155)
+  unlock          <- lucide "lock-open"  (#334155)
+  rect_mark       <- lucide "square-dashed"  (#E11D48)
+  highlight       <- lucide "highlighter"  (#D97706)
+  approval_stamp  <- lucide "stamp"  (#4F46E5)
+  rotate_right    <- lucide "rotate-cw"  (#334155)
+  rotate_left     <- lucide "rotate-ccw"  (#334155)
+  prev            <- lucide "chevron-left"  (#334155)
+  next            <- lucide "chevron-right"  (#334155)
+  zoom_in         <- lucide "zoom-in"  (#334155)
+  zoom_out        <- lucide "zoom-out"  (#334155)
+  cut             <- lucide "scissors"  (#334155)
+  copy            <- lucide "copy"  (#334155)
+  paste           <- lucide "clipboard-paste"  (#334155)
+  delete          <- lucide "trash-2"  (#DC2626)
+  info            <- lucide "info"  (#334155)
+   (v2 추가)
+  stamp           <- lucide "stamp"  (#C2410C)
+  signature       <- lucide "signature"  (#1D4ED8)
+  pen_line        <- lucide "pen-line"  (#334155)
+  settings        <- lucide "settings"  (#334155)
+  image_plus      <- lucide "image-plus"  (#334155)
+
+2) 앱 아이콘 (icon.svg, icon.ico, icon2.ico, icon2.png, icon_256.png)
+   Koinfra 자체 제작 (v2 시안 C: 흰 바탕 + 블루 문서 + 네이비 워드마크). 16~48px = "K" 모노그램(icon_small.svg), 64px 이상 = 워드마크 버전(icon.svg).
+   워드마크/모노그램 글자는 Poppins 폰트(SIL Open Font License 1.1, Indian Type Foundry) 글리프를 패스(아웃라인)로 변환해 사용.
+   폰트 파일 자체는 포함하지 않음(아이콘에 폰트 의존 없음).
+
+------------------------------------------------------------
+Lucide LICENSE 원문
+------------------------------------------------------------
+ISC License
+
+Copyright (c) 2026 Lucide Icons and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+---
+
+The following Lucide icons are derived from the Feather project:
+
+airplay, alert-circle, alert-octagon, alert-triangle, aperture, arrow-down-circle, arrow-down-left, arrow-down-right, arrow-down, arrow-left-circle, arrow-left, arrow-right-circle, arrow-right, arrow-up-circle, arrow-up-left, arrow-up-right, arrow-up, at-sign, calendar, cast, check, chevron-down, chevron-left, chevron-right, chevron-up, chevrons-down, chevrons-left, chevrons-right, chevrons-up, circle, clipboard, clock, code, columns, command, compass, corner-down-left, corner-down-right, corner-left-down, corner-left-up, corner-right-down, corner-right-up, corner-up-left, corner-up-right, crosshair, database, divide-circle, divide-square, dollar-sign, download, external-link, feather, frown, hash, headphones, help-circle, info, italic, key, layout, life-buoy, link-2, link, loader, lock, log-in, log-out, maximize, meh, minimize, minimize-2, minus-circle, minus-square, minus, monitor, moon, more-horizontal, more-vertical, move, music, navigation-2, navigation, octagon, pause-circle, percent, plus-circle, plus-square, plus, power, radio, rss, search, server, share, shopping-bag, sidebar, smartphone, smile, square, table-2, tablet, target, terminal, trash-2, trash, triangle, tv, type, upload, x-circle, x-octagon, x-square, x, zoom-in, zoom-out
+
+The MIT License (MIT) (for the icons listed above)
+
+Copyright (c) 2013-present Cole Bemis
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

@@ -1,0 +1,20 @@
+# build outputs
+build/
+build_*/
+dist/
+dist_*/
+installer/*.exe
+*.pyc
+__pycache__/
+# local / personal
+*.reg
+Koinfra_PDFEdit_backup_*/
+.vscode/
+.agents/
+out*/
+*.log
+*.tmp
+# user data (stamps, signatures, preferences) never belongs here
+preferences.json
+stamps/
+signatures/
