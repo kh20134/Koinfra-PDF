@@ -199,7 +199,8 @@ def main():
         for r in range(lst.count()):
             rect = lst.visualRect(lst.model().index(r, 0))
             worst_over = max(worst_over, rect.right() - (vw - 1), -rect.left())
-            worst_asym = max(worst_asym, abs(rect.left() - (vw - 1 - rect.right())))
+            cell_left, cell_right = window.thumbnail_cell_bounds(rect)  # 1.3: wide panel = grid, centered per column
+            worst_asym = max(worst_asym, abs((rect.left() - cell_left) - (cell_right - rect.right())))
         text_off = 0 if int(lst.model().index(0, 0).data(Qt.TextAlignmentRole) or 0) & int(Qt.AlignHCenter) or (lst.viewMode() == lst.IconMode and int(lst.viewOptions().displayAlignment) & int(Qt.AlignHCenter)) else 99
         return vw, worst_over, worst_asym, lst.horizontalScrollBar().maximum(), text_off
     orig_sizes = window.main_splitter.sizes()

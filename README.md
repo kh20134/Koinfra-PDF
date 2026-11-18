@@ -3,7 +3,7 @@
 Windows용 PDF 편집기(PyQt5)입니다. 여러 PDF를 합치고 페이지를 정리하며, 도장과 결재란을 넣어 저장할 수 있습니다.
 
 ## 주요 기능
-- **페이지:** 병합, 추출, 삽입, 삭제, 회전, 드래그로 순서 변경, 썸네일 미리보기
+- **페이지:** 병합, 추출, 삽입, 삭제, 회전, 드래그로 순서 변경, 썸네일 미리보기(칸을 넓히면 여러 열)
 - **보안:** PDF 암호 설정과 해제
 - **주석:** 사각형과 형광펜
 - **도장:** 도장 이미지를 넣고, 오른쪽 클릭으로 설정과 저장
@@ -12,7 +12,7 @@ Windows용 PDF 편집기(PyQt5)입니다. 여러 PDF를 합치고 페이지를 �
 - **PDF 기본 앱 설정:** Windows 앱 선택 창 또는 설정 화면으로 연결하고, 설정이 끝나면 자동으로 확인
 
 ## 설치 (일반 사용자)
-1. [Releases](../../releases)에서 `KoinfraPDF_Setup_1.0.exe`를 받아 실행합니다.
+1. [Releases](../../releases)에서 `KoinfraPDF_Setup_1.3.1.exe`를 받아 실행합니다.
 2. 마지막 화면의 **"PDF 기본 앱으로 설정"**을 체크한 채 마칩니다.
 3. 뜨는 창에서 **Koinfra PDF 선택 → '항상'**을 클릭합니다.
    - 설정 화면이 열리면 **.pdf → Koinfra PDF → '기본값 설정'**을 클릭합니다.
@@ -22,7 +22,7 @@ Windows용 PDF 편집기(PyQt5)입니다. 여러 PDF를 합치고 페이지를 �
 ## 소스에서 실행
 ```bash
 pip install -r requirements.txt
-python Koinfra.py [열 PDF 파일...]
+python Koinfra.py [열 PDF 파일...]   # kpdf_*.py 모듈이 같은 폴더에 있어야 합니다
 ```
 Python 3.11 또는 3.12, Windows 10/11에서 동작을 확인했습니다.
 
@@ -33,7 +33,7 @@ pip install pyinstaller
 pyinstaller --noconfirm --distpath dist_installer --workpath build_installer KoinfraPDFEdit_installer.spec
 
 # 2) 설치 파일 (Inno Setup 6)
-"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" KoinfraPDF.iss   # -> installer\KoinfraPDF_Setup_1.0.exe
+"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" KoinfraPDF.iss   # -> installer\KoinfraPDF_Setup_1.3.1.exe
 ```
 `KoinfraPDFEdit.spec`은 실행 파일 하나로 만드는(onefile) 빌드용입니다.
 
@@ -43,7 +43,35 @@ python test/static_check.py .
 python test/dyn_test.py . out_dyn
 python test/approval_test.py . out_appr t
 python test/assoc_test.py . out_assoc   # 임시 레지스트리 키(HKCU\Software\KoinfraTest)만 사용
+python test/full_audit_test.py . out_audit   # 전체 기능 점검(테스트 PDF 자동 생성)
+python test/registration_test.py . out_reg   # 연결 등록 경로(설치본 우선, 빌드·임시 폴더 차단, 고장난 연결 복구)
+python test/thumb_grid_test.py . out_grid   # 썸네일 칸 너비별 1/2/3열 배치, 가운데 정렬, 선택·드래그·스크롤
 ```
+
+## 변경 사항
+### 1.3.1
+- '연결 프로그램'으로 열면 아무것도 안 뜨고 아이콘이 기본 아이콘으로 보이던 문제 수정: 빌드·임시 폴더에서 실행한 사본이 PDF 연결을 자기 위치로 바꾸던 것을 막음(설치본이 있으면 항상 설치본으로 등록). 시작할 때 연결이 없는 파일을 가리키면 설치본으로 자동 복구
+- 설치 시 아이콘 캐시를 새로 고쳐 '연결 프로그램'·기본 앱 화면에 Koinfra PDF 아이콘이 바로 보임, 예전 빌드가 남긴 App Paths 'Path' 값 정리
+
+### 1.3
+- 왼쪽 썸네일 칸을 넓히면 썸네일이 2열, 3열…로 바둑판처럼 배치됨(칸 너비에 맞춰 열 수 자동, 각 썸네일은 칸 가운데). 선택·드래그 순서 변경·페이지 번호·현재 페이지로 스크롤은 그대로
+
+### 1.2
+- 코드 정리: `Koinfra.py`(창·연결 프로그램) + `kpdf_core`(설정·페이지 모델) / `kpdf_graphics`(아이콘·결재란) / `kpdf_widgets`(썸네일·미리보기·서명/도장 창) / `kpdf_export`(PDF 저장·인쇄)로 나눔, 쓰지 않는 코드 제거
+- 여러 장짜리 PDF를 빨리 엶: 페이지 크기를 문서 한 번 열 때 한꺼번에 읽음(80쪽 PDF 열기 약 650ms → 75ms)
+- 시작이 빨라짐: pypdf·Pillow·인쇄 모듈은 저장·인쇄할 때 처음 불러옴(모듈 로딩 약 105ms → 60ms)
+- 메모리 사용 감소: 미리보기 캐시를 장수(24)와 용량(192MB) 둘 다로 제한(80쪽 PDF 확대 후 약 475MB → 380MB)
+- 도장·서명·결재란을 PDF에 넣을 때 임시 파일을 만들지 않음
+
+### 1.1
+- 썸네일 목록을 아래로 내리면 썸네일이 오른쪽으로 밀리던 문제 수정
+- Ctrl+휠 확대·축소가 끊기던 문제 수정: 휠을 돌리는 동안에는 바로 확대해 보여 주고, 멈추면 선명하게 다시 그림(휠 한 칸당 약 110ms → 7ms). 고해상도 휠·터치패드는 한 칸 단위로 계산
+- 툴바·메뉴의 확대/축소 버튼을 누르면 오류가 나던 문제 수정
+- 확대한 상태에서 휠을 굴리면 페이지 안에서 먼저 스크롤하고, 끝에 닿으면 다음 페이지로 넘어감
+- 저장(Ctrl+S) 뒤 페이지가 어긋나거나 다음 저장에서 회전·도장이 두 번 들어가던 문제 수정(저장한 파일을 다시 불러옴)
+- 암호가 걸린 PDF를 저장하면 암호가 풀리던 문제 수정(같은 암호 유지)
+- 저장 실패(권한·경로 오류 등) 때 프로그램이 꺼지지 않고, 원본 파일도 손상되지 않음
+- 파일을 더블클릭해 열면 창 제목에 파일 이름이 나오고, 되돌리기로 문서가 사라지지 않음
 
 ## 라이선스 안내
 - 툴바 아이콘은 [Lucide](https://lucide.dev) 아이콘을 기반으로 합니다. 라이선스는 `ICONS_LICENSE.txt`(ISC)를 참고하세요.

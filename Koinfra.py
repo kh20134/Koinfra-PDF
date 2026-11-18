@@ -3,68 +3,40 @@ import sys
 import tempfile
 import winreg
 import ctypes
-import json
 import shutil
 import subprocess
 import time
 import uuid
-import zlib
-from dataclasses import dataclass
 from pathlib import Path
 
+# The kpdf_* modules sit next to this file; also importable when the tests load Koinfra.py by path.
+_APP_SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _APP_SOURCE_DIR not in sys.path:
+    sys.path.insert(0, _APP_SOURCE_DIR)
+
 try:
+    import importlib.util
+
+    for _required in ("PIL", "pypdf"):  # imported lazily (on save/print); only checked for presence here
+        if importlib.util.find_spec(_required) is None:
+            raise ImportError(f"No module named '{_required}'")
     import pypdfium2 as pdfium
-    from PIL import Image, ImageChops
-    from pypdf import PdfReader, PdfWriter, Transformation
-    from pypdf.generic import ArrayObject, DictionaryObject, FloatObject, NameObject, NumberObject
     from PyQt5.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer
     from PyQt5.QtGui import (
-        QColor,
-        QPainterPath,
-        QDragEnterEvent,
-        QDropEvent,
-        QFont,
-        QFontMetricsF,
-        QIcon,
-        QImage,
-        QImageReader,
-        QKeySequence,
-        QPainter,
-        QPen,
+        QColor, QDragEnterEvent, QDropEvent, QFont, QIcon, QImage, QKeySequence, QPainter, QPen,
         QPixmap,
     )
-    from PyQt5.QtPrintSupport import QPrintDialog, QPrinter
     from PyQt5.QtWidgets import (
-        QAbstractItemView,
-        QAction,
-        QApplication,
-        QCheckBox,
-        QComboBox,
-        QDialog,
-        QDialogButtonBox,
-        QFormLayout,
-        QFrame,
-        QMenu,
-        QFileDialog,
-        QHBoxLayout,
-        QInputDialog,
-        QLabel,
-        QLayout,
-        QLineEdit,
-        QListWidget,
-        QListWidgetItem,
-        QMainWindow,
-        QMessageBox,
-        QPushButton,
-        QScrollArea,
-        QSpinBox,
-        QSplitter,
-        QStatusBar,
-        QToolBar,
-        QToolButton,
-        QVBoxLayout,
-        QWidget,
+        QAction, QApplication, QCheckBox, QDialog, QFrame, QMenu, QFileDialog, QHBoxLayout,
+        QInputDialog, QLabel, QLayout, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
+        QSpinBox, QSplitter, QStatusBar, QToolBar, QToolButton, QVBoxLayout, QWidget,
     )
+    from kpdf_core import APP_DIR, APP_EXE_NAME, APP_ICON2_ICO, APP_ICON_ICO, APP_PROG_ID, APP_TITLE, APP_USER_MODEL_ID, INSTALLER_APP_ID, PAGE_ROLE, PDF_DOC_ICON_NAME, PDF_FILTER, PRINT_DPI, PageMark, PageRef, RESOURCE_DIR, _read_preferences_payload, _write_preferences_payload, load_signature_settings, load_stamp_settings, load_user_preferences, normalize_approval_line, normalize_signature_settings, normalize_stamp_settings, page_refs_for_pdf, parse_page_ranges, pdfium_page_to_qimage, remove_white_background, save_signature_settings, save_stamp_settings, save_user_preferences, user_data_dir
+    from kpdf_widgets import PageThumbnailList, PdfCanvasLabel, PdfScrollArea, SignatureDialog, StampSettingsDialog
+    from kpdf_graphics import load_app_icon, make_page_icon, make_tool_icon, paint_approval_table
+    from kpdf_export import PdfExportMixin
+    from kpdf_core import RENDER_CACHE_MAX_BYTES, RENDER_CACHE_MAX_ITEMS, TOOL_ICON_DIR, pdf_page_sizes
+    from kpdf_graphics import approval_geometry, approval_signature_cell_rect
 except ImportError as exc:
     print(
         "\ud544\uc218 \ud328\ud0a4\uc9c0\uac00 \uc124\uce58\ub418\uc5b4 \uc788\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4.\n"
@@ -74,381 +46,8 @@ except ImportError as exc:
     )
     raise
 
-
-APP_TITLE = "KoinfraPDFEdit"
-PDF_FILTER = "PDF \ud30c\uc77c (*.pdf)"
-PAGE_ROLE = Qt.UserRole + 1
-APP_DIR = Path(__file__).resolve().parent
-RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", str(APP_DIR)))
-APP_ICON_SVG = RESOURCE_DIR / "icon.svg"
-APP_ICON2_ICO = RESOURCE_DIR / "icon2.ico"
-APP_ICON_ICO = RESOURCE_DIR / "icon.ico"
-PDF_DOC_ICON_NAME = "koinfra_pdf_doc.ico"
-INSTALLER_APP_ID = "{6E0B5D4C-6F1E-4C0B-9B6B-3F7A1E2C9A51}"  # Inno Setup AppId (KoinfraPDF.iss)
-TOOL_ICON_DIR = RESOURCE_DIR / "icons"
-TOOL_ICON_SIZES = (16, 20, 22, 24, 28, 32, 40, 44, 48, 56, 64)
-APP_EXE_NAME = "KoinfraPDFEdit.exe"
-APP_USER_MODEL_ID = "Koinfra.PDFEdit.KoinfraPDFEdit"
-APP_PROG_ID = "Koinfra.PDFEdit.Document"
-APP_DEFAULTS_CAPABILITY_PATH = r"Software\Koinfra\KoinfraPDFEdit\Capabilities"
-PRINT_DPI = 200
-PRINT_MAX_RENDER_SCALE = 3.0
-DEFAULT_APPROVAL_LINE = ("\ub2f4\ub2f9", "\uac80\ud1a0", "\uc2b9\uc778")
-
-
-@dataclass(frozen=True)
-class PageMark:
-    kind: str
-    rect: tuple
-    data: tuple = ()
-
-
-@dataclass(frozen=True)
-class PageRef:
-    path: str
-    page_index: int
-    rotation: int = 0
-    marks: tuple = ()
-    password: str = ""
-
-
-def user_data_dir():
-    base_dir = Path(os.environ.get("APPDATA") or APP_DIR)
-    return base_dir / APP_TITLE
-
-
-def user_preferences_path():
-    return user_data_dir() / "preferences.json"
-
-
-def normalize_approval_line(labels):
-    if isinstance(labels, str):
-        labels = labels.replace("\n", ",").split(",")
-    if not isinstance(labels, (list, tuple)):
-        return DEFAULT_APPROVAL_LINE
-
-    cleaned = []
-    for label in labels:
-        value = str(label).strip()
-        if value and value not in cleaned:
-            cleaned.append(value[:24])
-    return tuple(cleaned[:6]) or DEFAULT_APPROVAL_LINE
-
-
-def _read_preferences_payload():
-    try:
-        payload = json.loads(user_preferences_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        payload = {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _write_preferences_payload(payload):
-    preferences_path = user_preferences_path()
-    preferences_path.parent.mkdir(parents=True, exist_ok=True)
-    preferences_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def load_user_preferences():
-    payload = _read_preferences_payload()
-
-    approval_line = normalize_approval_line(payload.get("approval_line"))
-    stamp_images = []
-    stored_images = payload.get("stamp_images", [])
-    for value in stored_images if isinstance(stored_images, list) else []:
-        path = Path(value)
-        if path.is_file() and path.suffix.lower() == ".png":
-            stamp_images.append(str(path))
-    return approval_line, stamp_images
-
-
-def save_user_preferences(approval_line, stamp_images):
-    payload = _read_preferences_payload()
-    payload["approval_line"] = list(normalize_approval_line(approval_line))
-    payload["stamp_images"] = [str(Path(path)) for path in stamp_images if Path(path).is_file()]
-    _write_preferences_payload(payload)
-
-
-STAMP_POSITIONS = (
-    ("bottom_right", "오른쪽 아래"),
-    ("top_right", "오른쪽 위"),
-    ("bottom_left", "왼쪽 아래"),
-    ("top_left", "왼쪽 위"),
-    ("center", "가운데"),
-)
-DEFAULT_STAMP_SETTINGS = {"image": "", "width_percent": 16, "opacity_percent": 100, "position": "bottom_right"}
-DEFAULT_SIGNATURE_SETTINGS = {"image": "", "cell": 0}
-
-
-def _clamped_int(value, default, low, high):
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        number = default
-    return max(low, min(high, number))
-
-
-def normalize_stamp_settings(value):
-    value = value if isinstance(value, dict) else {}
-    image = str(value.get("image") or "")
-    if image and not Path(image).is_file():
-        image = ""
-    position = value.get("position")
-    if position not in {key for key, _ in STAMP_POSITIONS}:
-        position = DEFAULT_STAMP_SETTINGS["position"]
-    return {
-        "image": image,
-        "width_percent": _clamped_int(value.get("width_percent"), DEFAULT_STAMP_SETTINGS["width_percent"], 5, 60),
-        "opacity_percent": _clamped_int(value.get("opacity_percent"), DEFAULT_STAMP_SETTINGS["opacity_percent"], 20, 100),
-        "position": position,
-    }
-
-
-def normalize_signature_settings(value):
-    value = value if isinstance(value, dict) else {}
-    image = str(value.get("image") or "")
-    if image and not Path(image).is_file():
-        image = ""
-    return {"image": image, "cell": _clamped_int(value.get("cell"), 0, 0, 5)}
-
-
-def load_stamp_settings():
-    return normalize_stamp_settings(_read_preferences_payload().get("stamp_settings"))
-
-
-def save_stamp_settings(settings):
-    payload = _read_preferences_payload()
-    payload["stamp_settings"] = normalize_stamp_settings(settings)
-    _write_preferences_payload(payload)
-
-
-def load_signature_settings():
-    return normalize_signature_settings(_read_preferences_payload().get("signature"))
-
-
-def save_signature_settings(settings):
-    payload = _read_preferences_payload()
-    payload["signature"] = normalize_signature_settings(settings)
-    _write_preferences_payload(payload)
-
-
-def approval_geometry(rect, labels):
-    """Fractions used by the approval table (same math for preview and PDF)."""
-    left, top, right, bottom = rect
-    width = right - left
-    height = bottom - top
-    count = max(1, len(labels))
-    label_width = min(width * 0.22, max(width * 0.16, width * 0.72 / (count + 1)))
-    signer_width = (width - label_width) / count
-    header_height = height * 0.34
-    return label_width, signer_width, header_height
-
-
-def approval_signature_cell_rect(rect, labels, cell_index):
-    """Normalized rect of the signature area under the header of one approval column."""
-    left, top, _right, bottom = rect
-    label_width, signer_width, header_height = approval_geometry(rect, labels)
-    cell_index = max(0, min(len(labels) - 1, cell_index))
-    cell_left = left + label_width + signer_width * cell_index
-    cell_top = top + header_height
-    pad_x = signer_width * 0.08
-    pad_y = (bottom - cell_top) * 0.10
-    return (cell_left + pad_x, cell_top + pad_y, cell_left + signer_width - pad_x, bottom - pad_y)
-
-
-APPROVAL_FONT_FAMILIES = ["Malgun Gothic", "\ub9d1\uc740 \uace0\ub515", "Apple SD Gothic Neo", "Noto Sans CJK KR", "NanumGothic", "Gulim"]
-
-
-def approval_font(pixel_size, bold=True):
-    font = QFont()
-    font.setFamilies(APPROVAL_FONT_FAMILIES) if hasattr(font, "setFamilies") else font.setFamily(APPROVAL_FONT_FAMILIES[0])
-    font.setPixelSize(max(1, int(pixel_size)))
-    font.setBold(bold)
-    font.setStyleStrategy(QFont.PreferAntialias)
-    return font
-
-
-def paint_approval_table(painter, rect, labels, signature=None, signature_cell=0):
-    """Draw a complete approval table: vertical '\uacb0\uc7ac' head cell, title row, signature row, all borders.
-
-    Line width and text size scale with the table, so the on-screen preview and the high-resolution
-    image embedded in the saved PDF look the same.
-    """
-    labels = normalize_approval_line(labels)
-    pen_width = max(1.0, rect.height() * 0.012)
-    half = pen_width / 2
-    box = QRectF(rect).adjusted(half, half, -half, -half)
-    label_ratio, signer_ratio, header_ratio = approval_geometry((0.0, 0.0, 1.0, 1.0), labels)
-    left, top, width, height = box.left(), box.top(), box.width(), box.height()
-    label_width = width * label_ratio
-    signer_width = width * signer_ratio
-    header_height = height * header_ratio
-    x1 = left + label_width
-
-    painter.save()
-    painter.setRenderHint(QPainter.Antialiasing)
-    painter.setRenderHint(QPainter.TextAntialiasing)
-    painter.setRenderHint(QPainter.SmoothPixmapTransform)
-    painter.setBrush(QColor(255, 255, 255, 235))
-    pen = QPen(QColor("#111827"), pen_width, Qt.SolidLine, Qt.SquareCap, Qt.MiterJoin)
-    painter.setPen(pen)
-    painter.drawRect(box)
-    painter.drawLine(QPointF(x1, top), QPointF(x1, box.bottom()))
-    for column in range(1, len(labels)):
-        x = x1 + signer_width * column
-        painter.drawLine(QPointF(x, top), QPointF(x, box.bottom()))
-    painter.drawLine(QPointF(x1, top + header_height), QPointF(box.right(), top + header_height))
-
-    painter.setPen(QColor("#111827"))
-    # Title row: one size for every column, shrunk until the longest title fits.
-    title_size = max(4.0, header_height * 0.46)
-    while title_size > 4:
-        metrics = QFontMetricsF(approval_font(title_size))
-        if max(metrics.horizontalAdvance(label) for label in labels) <= signer_width * 0.86:
-            break
-        title_size -= 0.5
-    painter.setFont(approval_font(title_size))
-    for index, label in enumerate(labels):
-        painter.drawText(QRectF(x1 + signer_width * index, top, signer_width, header_height), Qt.AlignCenter, label)
-
-    head_size = max(4.0, min(label_width * 0.5, height * 0.2))
-    painter.setFont(approval_font(head_size))
-    painter.drawText(QRectF(left, top, label_width, height), Qt.AlignCenter, "\uacb0\n\uc7ac")
-
-    if signature is not None and not signature.isNull():
-        cell = approval_signature_cell_rect((0.0, 0.0, 1.0, 1.0), labels, signature_cell)
-        target = QRectF(left + cell[0] * width, top + cell[1] * height, (cell[2] - cell[0]) * width, (cell[3] - cell[1]) * height)
-        ratio = min(target.width() / max(1, signature.width()), target.height() / max(1, signature.height()))
-        fitted_width = signature.width() * ratio
-        fitted_height = signature.height() * ratio
-        fitted = QRectF(target.center().x() - fitted_width / 2, target.center().y() - fitted_height / 2, fitted_width, fitted_height)
-        painter.drawPixmap(fitted, signature, QRectF(signature.rect()))
-    painter.restore()
-
-
-def render_approval_image(path, labels, width_pt, height_pt, signature_path=None, signature_cell=0, dpi=432):
-    """Rasterize the approval table at print resolution (transparent PNG) for embedding into the PDF."""
-    scale = dpi / 72.0
-    longest = max(width_pt, height_pt) * scale
-    if longest > 3600:
-        scale *= 3600 / longest
-    image = QImage(max(8, int(round(width_pt * scale))), max(8, int(round(height_pt * scale))), QImage.Format_ARGB32)
-    image.fill(Qt.transparent)
-    signature = QPixmap(str(signature_path)) if signature_path and Path(signature_path).is_file() else None
-    painter = QPainter(image)
-    paint_approval_table(painter, QRectF(0, 0, image.width(), image.height()), labels, signature, signature_cell)
-    painter.end()
-    if not image.save(str(path), "PNG"):
-        raise OSError(f"approval image save failed: {path}")
-    return path
-
-
-def png_image_to_pdf_page_bytes(image_path, opacity=1.0):
-    """Build a one-page PDF (page size = image px) that keeps PNG transparency via an /SMask."""
-    with Image.open(image_path) as source:
-        image = source.convert("RGBA")
-    alpha = image.getchannel("A")
-    if opacity < 1.0:
-        factor = max(0.0, min(1.0, opacity))
-        alpha = alpha.point(lambda value: int(value * factor))
-    width, height = image.size
-    rgb_data = zlib.compress(image.convert("RGB").tobytes())
-    alpha_data = zlib.compress(alpha.tobytes())
-    content = f"q {width} 0 0 {height} 0 0 cm /Im0 Do Q".encode("ascii")
-    objects = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {height}] "
-        f"/Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>".encode("ascii"),
-        b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
-        f"<< /Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceRGB "
-        f"/BitsPerComponent 8 /Filter /FlateDecode /SMask 6 0 R /Length {len(rgb_data)} >>\nstream\n".encode("ascii")
-        + rgb_data
-        + b"\nendstream",
-        f"<< /Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceGray "
-        f"/BitsPerComponent 8 /Filter /FlateDecode /Length {len(alpha_data)} >>\nstream\n".encode("ascii")
-        + alpha_data
-        + b"\nendstream",
-    ]
-    output = bytearray(b"%PDF-1.4\n")
-    offsets = []
-    for number, body in enumerate(objects, start=1):
-        offsets.append(len(output))
-        output += b"%d 0 obj\n" % number + body + b"\nendobj\n"
-    xref_offset = len(output)
-    output += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
-    for offset in offsets:
-        output += b"%010d 00000 n \n" % offset
-    output += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, xref_offset)
-    return bytes(output)
-
-
-def remove_white_background(image_path, threshold=235):
-    with Image.open(image_path) as source:
-        image = source.convert("RGBA")
-    red, green, blue, alpha = image.split()
-    darkest = ImageChops.darker(ImageChops.darker(red, green), blue)
-    keep_mask = darkest.point(lambda value: 0 if value >= threshold else 255)
-    image.putalpha(ImageChops.darker(alpha, keep_mask))
-    image.save(image_path, "PNG")
-
-
-def parse_page_ranges(text, total_pages):
-    pages = []
-    seen = set()
-
-    for chunk in text.replace(" ", "").split(","):
-        if not chunk:
-            continue
-
-        if "-" in chunk:
-            start_text, end_text = chunk.split("-", 1)
-            start = int(start_text)
-            end = int(end_text)
-        else:
-            start = end = int(chunk)
-
-        if start < 1 or end < 1 or start > total_pages or end > total_pages:
-            raise ValueError(
-                f"\ud398\uc774\uc9c0 \ubc94\uc704\ub294 1-{total_pages} \uc548\uc5d0\uc11c \uc785\ub825\ud574\uc57c \ud569\ub2c8\ub2e4: {chunk}"
-            )
-        if start > end:
-            raise ValueError(f"\uc2dc\uc791 \ud398\uc774\uc9c0\uac00 \ub05d \ud398\uc774\uc9c0\ubcf4\ub2e4 \ud07d\ub2c8\ub2e4: {chunk}")
-
-        for page_number in range(start, end + 1):
-            page_index = page_number - 1
-            if page_index not in seen:
-                seen.add(page_index)
-                pages.append(page_index)
-
-    if not pages:
-        raise ValueError("\uc120\ud0dd\ub41c \ud398\uc774\uc9c0\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.")
-
-    return pages
-
-
-def page_refs_for_pdf(path, password=""):
-    with pdfium.PdfDocument(path, password=password or None) as doc:
-        return [PageRef(path, index, password=password) for index in range(len(doc))]
-
-
-def load_app_icon():
-    # Prefer the multi-size ICO: 16~48px use the simplified "K" monogram, 64px+ the full logo.
-    for icon_path in (APP_ICON2_ICO, APP_ICON_ICO):
-        if not icon_path.is_file():
-            continue
-        icon = QIcon()
-        reader = QImageReader(str(icon_path))
-        for image_index in range(max(1, reader.imageCount())):
-            reader.jumpToImage(image_index)
-            image = reader.read()
-            if not image.isNull():
-                icon.addPixmap(QPixmap.fromImage(image))
-        if not icon.isNull():
-            return icon
-    if APP_ICON_SVG.is_file():
-        return QIcon(str(APP_ICON_SVG))
-    return QIcon()
+# Moved into kpdf_* modules but still part of this module's surface (the test suites load Koinfra.py as `K`).
+_REEXPORTED = (TOOL_ICON_DIR, save_stamp_settings, approval_geometry, approval_signature_cell_rect)
 
 
 def configure_windows_taskbar_icon():
@@ -460,10 +59,8 @@ def configure_windows_taskbar_icon():
         pass
 
 
-def installed_exe_path():
-    """KoinfraPDFEdit.exe installed by the Koinfra PDF installer (per-user or all users), else None."""
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable)
+def installer_location_exe():
+    """KoinfraPDFEdit.exe at the Koinfra PDF installer's InstallLocation (per-user or all users), else None."""
     if sys.platform != "win32":
         return None
     subkey = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + INSTALLER_APP_ID + "_is1"
@@ -476,6 +73,17 @@ def installed_exe_path():
         exe = Path(location) / APP_EXE_NAME
         if exe.is_file():
             return exe
+    return None
+
+
+def installed_exe_path():
+    """The exe PDF files should open with: the installed copy whenever there is one (a build or test copy that happens
+    to run must never take over the registration), else the running frozen exe, else None (script)."""
+    exe = installer_location_exe()
+    if exe is not None:
+        return exe
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable)
     return None
 
 
@@ -597,6 +205,50 @@ def association_target_warning():
             "\ud30c\uc77c\uc744 \uc62e\uae30\uac70\ub098 \uc9c0\uc6b0\uba74 \uc5f0\uacb0\uc774 \ub04a\uc5b4\uc9c0\ub2c8 \uc124\uce58\ubcf8 \uc0ac\uc6a9\uc744 \uad8c\uc7a5\ud569\ub2c8\ub2e4."
         )
     return ""
+
+
+def _command_exe(command):
+    """First (quoted) path of a registered shell command."""
+    command = (command or "").strip()
+    if command.startswith('"'):
+        return command[1:].split('"', 1)[0]
+    return command.split(" ", 1)[0]
+
+
+def registration_broken(base=None, hive=None):
+    """True when our Open-with / ProgID registration points at a program or icon file that no longer exists."""
+    paths = _assoc_paths(base)
+    for key in (paths["progid"] + r"\shell\open\command", paths["app"] + r"\shell\open\command"):
+        command = _reg_get(key, "", hive)
+        if command and not Path(_command_exe(command)).is_file():
+            return True
+    for key, name in ((paths["app"] + r"\DefaultIcon", ""), (paths["capabilities"], "ApplicationIcon")):
+        icon = _reg_get(key, name, hive)
+        if icon and not Path(icon.rsplit(",", 1)[0] if icon.rsplit(",", 1)[-1].lstrip("-").isdigit() else icon).is_file():
+            return True
+    return False
+
+
+def startup_registration_allowed():
+    """Auto-registration at start: always fine when the app is installed (it registers the installed exe);
+    without an installed copy, never bind PDFs to a build/temp folder (it vanishes -> 'Open with' does nothing)."""
+    if os.environ.get("KOINFRA_NO_REGISTER"):
+        return False
+    if installer_location_exe() is not None:
+        return True
+    return not association_target_warning()
+
+
+def startup_register(base=None, hive=None):
+    """Called at start. Keeps the registration current, and repairs a stale one even when auto-registration was turned off.
+    Returns 'registered', 'repaired' or ''."""
+    if not startup_registration_allowed():
+        return ""
+    broken = registration_broken(base, hive)
+    if load_association_preferences()["disabled"] and not broken:
+        return ""
+    register_openwith(base, hive)
+    return "repaired" if broken else "registered"
 
 
 def register_openwith(base=None, hive=None, notify=True):
@@ -829,1009 +481,7 @@ def save_association_preferences(**changes):
     return current
 
 
-_TOOL_ICON_CACHE = {}
-
-
-def make_tool_icon(kind, size=32):
-    """Load the Lucide-based line icon from icons/<kind>_<px>.png (multi-size, HiDPI-ready).
-
-    Falls back to the legacy painter-drawn icon when the icon files are missing.
-    """
-    cached = _TOOL_ICON_CACHE.get(kind)
-    if cached is not None:
-        return cached
-    icon = QIcon()
-    for px in TOOL_ICON_SIZES:
-        icon_path = TOOL_ICON_DIR / f"{kind}_{px}.png"
-        if icon_path.is_file():
-            icon.addFile(str(icon_path), QSize(px, px))
-    if icon.isNull():
-        return _draw_legacy_tool_icon(kind, size)
-    _TOOL_ICON_CACHE[kind] = icon
-    return icon
-
-
-def _draw_legacy_tool_icon(kind, size=32):
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-
-    palette = {
-        "open": ("#2563eb", "#dbeafe"),
-        "save": ("#0f766e", "#ccfbf1"),
-        "merge": ("#7c3aed", "#ede9fe"),
-        "extract": ("#ea580c", "#ffedd5"),
-        "insert": ("#16a34a", "#dcfce7"),
-        "prev": ("#475569", "#f1f5f9"),
-        "next": ("#475569", "#f1f5f9"),
-        "zoom_out": ("#1d4ed8", "#dbeafe"),
-        "zoom_in": ("#be123c", "#ffe4e6"),
-        "print": ("#374151", "#f3f4f6"),
-        "rotate_left": ("#0f766e", "#ccfbf1"),
-        "rotate_right": ("#0f766e", "#ccfbf1"),
-        "rect_mark": ("#dc2626", "#fee2e2"),
-        "highlight": ("#ca8a04", "#fef3c7"),
-        "approval_stamp": ("#1f2937", "#e5e7eb"),
-        "cut": ("#b45309", "#ffedd5"),
-        "copy": ("#0369a1", "#e0f2fe"),
-        "paste": ("#4d7c0f", "#ecfccb"),
-        "delete": ("#991b1b", "#fee2e2"),
-        "info": ("#334155", "#e2e8f0"),
-        "lock": ("#7c2d12", "#ffedd5"),
-        "unlock": ("#047857", "#d1fae5"),
-    }
-
-    stroke_hex, fill_hex = palette.get(kind, ("#2563eb", "#dbeafe"))
-    color = QColor(stroke_hex)
-    fill = QColor(fill_hex)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing)
-    scale = size / 32
-
-    def u(value):
-        return value * scale
-
-    def pt(x, y):
-        return QPointF(u(x), u(y))
-
-    def rect(x, y, w, h):
-        return QRectF(u(x), u(y), u(w), u(h))
-
-    def set_pen(width=2.15, pen_color=None):
-        painter.setPen(QPen(pen_color or color, u(width), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-
-    def draw_badge():
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(15, 23, 42, 24))
-        painter.drawRoundedRect(rect(2.5, 3.5, 27, 27), u(8), u(8))
-        painter.setPen(QPen(QColor("#d8e2ef"), u(0.85)))
-        painter.setBrush(QColor("#ffffff"))
-        painter.drawRoundedRect(rect(2, 2, 28, 28), u(8), u(8))
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(color)
-        painter.drawEllipse(pt(24.2, 7.8), u(2.35), u(2.35))
-
-    def draw_page(x, y, w=14, h=18, lines=True):
-        painter.setBrush(QColor("#ffffff"))
-        set_pen(1.7)
-        painter.drawRoundedRect(rect(x, y, w, h), u(2.8), u(2.8))
-        painter.drawLine(pt(x + w - 4, y), pt(x + w, y + 4))
-        if lines:
-            set_pen(1.25, QColor("#94a3b8"))
-            painter.drawLine(pt(x + 4, y + 7), pt(x + w - 4, y + 7))
-            painter.drawLine(pt(x + 4, y + 11), pt(x + w - 5, y + 11))
-
-    def draw_arrow(x1, y1, x2, y2, direction="right", width=2.2):
-        set_pen(width)
-        painter.drawLine(pt(x1, y1), pt(x2, y2))
-        if direction == "right":
-            painter.drawLine(pt(x2, y2), pt(x2 - 4, y2 - 4))
-            painter.drawLine(pt(x2, y2), pt(x2 - 4, y2 + 4))
-        elif direction == "left":
-            painter.drawLine(pt(x2, y2), pt(x2 + 4, y2 - 4))
-            painter.drawLine(pt(x2, y2), pt(x2 + 4, y2 + 4))
-        elif direction == "up":
-            painter.drawLine(pt(x2, y2), pt(x2 - 4, y2 + 4))
-            painter.drawLine(pt(x2, y2), pt(x2 + 4, y2 + 4))
-        else:
-            painter.drawLine(pt(x2, y2), pt(x2 - 4, y2 - 4))
-            painter.drawLine(pt(x2, y2), pt(x2 + 4, y2 - 4))
-
-    draw_badge()
-    set_pen()
-
-    if kind == "open":
-        painter.setBrush(QColor("#ffffff"))
-        painter.drawRoundedRect(rect(6, 11, 20, 13), u(3), u(3))
-        painter.drawLine(pt(7.5, 11), pt(11, 7.5))
-        painter.drawLine(pt(11, 7.5), pt(17, 7.5))
-        painter.drawLine(pt(17, 7.5), pt(20, 11))
-        draw_arrow(16, 20.5, 22.5, 16, "right", 1.8)
-    elif kind == "save":
-        painter.setBrush(QColor("#ffffff"))
-        painter.drawRoundedRect(rect(8, 6, 16, 20), u(3), u(3))
-        painter.setBrush(fill)
-        painter.drawRoundedRect(rect(11, 7, 8, 6), u(1.5), u(1.5))
-        painter.drawRoundedRect(rect(11, 20, 10, 4), u(1.5), u(1.5))
-        painter.drawLine(pt(21, 7), pt(21, 13))
-    elif kind == "merge":
-        draw_page(6, 8, 12, 16)
-        draw_page(15, 8, 12, 16)
-        draw_arrow(12, 24.5, 20, 24.5, "right", 1.8)
-    elif kind == "extract":
-        draw_page(6, 7, 15, 19)
-        draw_arrow(17, 16, 26, 16, "right")
-    elif kind == "insert":
-        draw_page(6, 7, 15, 19)
-        set_pen(2.3)
-        painter.drawLine(pt(23.5, 11), pt(23.5, 21))
-        painter.drawLine(pt(18.5, 16), pt(28.5, 16))
-    elif kind == "prev":
-        draw_arrow(24, 16, 9, 16, "left", 2.6)
-    elif kind == "next":
-        draw_arrow(8, 16, 23, 16, "right", 2.6)
-    elif kind == "zoom_in" or kind == "zoom_out":
-        painter.setBrush(QColor("#ffffff"))
-        painter.drawEllipse(pt(14, 14), u(6), u(6))
-        painter.drawLine(pt(18.5, 18.5), pt(24, 24))
-        painter.drawLine(pt(10, 14), pt(18, 14))
-        if kind == "zoom_in":
-            painter.drawLine(pt(14, 10), pt(14, 18))
-    elif kind == "print":
-        painter.setBrush(QColor("#ffffff"))
-        painter.drawRoundedRect(rect(7, 11, 18, 10), u(3), u(3))
-        painter.drawRoundedRect(rect(10, 6, 12, 7), u(1.5), u(1.5))
-        painter.drawRoundedRect(rect(10, 18, 12, 7), u(1.5), u(1.5))
-        painter.setBrush(color)
-        painter.drawEllipse(pt(22, 15), u(1), u(1))
-    elif kind == "rotate_left" or kind == "rotate_right":
-        arc_rect = rect(8, 8, 16, 16)
-        if kind == "rotate_left":
-            painter.drawArc(arc_rect, 30 * 16, 285 * 16)
-            draw_arrow(12, 8.5, 7.5, 8.5, "left", 2)
-        else:
-            painter.drawArc(arc_rect, -135 * 16, 285 * 16)
-            draw_arrow(20, 8.5, 24.5, 8.5, "right", 2)
-    elif kind == "rect_mark":
-        painter.setBrush(QColor(255, 255, 255, 155))
-        painter.drawRoundedRect(rect(7, 9, 18, 14), u(2.5), u(2.5))
-        set_pen(1.4, QColor("#fca5a5"))
-        painter.drawLine(pt(10, 13), pt(22, 13))
-    elif kind == "highlight":
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(250, 204, 21, 190))
-        painter.drawRoundedRect(rect(6, 15, 20, 6), u(2), u(2))
-        set_pen(2)
-        painter.drawLine(pt(10, 10), pt(20, 20))
-        painter.drawLine(pt(20, 20), pt(24, 16))
-        set_pen(1.4, QColor("#854d0e"))
-        painter.drawLine(pt(8, 23), pt(24, 23))
-    elif kind == "approval_stamp":
-        painter.setBrush(QColor("#ffffff"))
-        painter.drawRoundedRect(rect(7, 10, 18, 13), u(2.5), u(2.5))
-        set_pen(1.2, QColor("#9ca3af"))
-        painter.drawLine(pt(13, 10), pt(13, 23))
-        painter.drawLine(pt(19, 10), pt(19, 23))
-        painter.drawLine(pt(7, 15), pt(25, 15))
-        set_pen(1.9)
-        painter.drawLine(pt(12, 7), pt(20, 7))
-        painter.drawLine(pt(16, 7), pt(16, 10))
-        painter.drawEllipse(pt(16, 19), u(1.8), u(1.8))
-    elif kind == "cut":
-        painter.setBrush(QColor("#ffffff"))
-        painter.drawEllipse(pt(10, 22), u(3), u(3))
-        painter.drawEllipse(pt(22, 22), u(3), u(3))
-        painter.drawLine(pt(12, 20), pt(23, 9))
-        painter.drawLine(pt(20, 20), pt(9, 9))
-    elif kind == "copy":
-        draw_page(8, 11, 13, 15)
-        draw_page(13, 7, 13, 15)
-    elif kind == "paste":
-        painter.setBrush(QColor("#ffffff"))
-        painter.drawRoundedRect(rect(9, 9, 16, 18), u(3), u(3))
-        painter.setBrush(fill)
-        painter.drawRoundedRect(rect(12, 6, 10, 6), u(2), u(2))
-        set_pen(1.25, QColor("#84cc16"))
-        painter.drawLine(pt(13, 17), pt(21, 17))
-        painter.drawLine(pt(13, 21), pt(19, 21))
-    elif kind == "delete":
-        set_pen(2.6)
-        painter.drawLine(pt(10, 10), pt(22, 22))
-        painter.drawLine(pt(22, 10), pt(10, 22))
-    elif kind == "info":
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(color)
-        painter.drawEllipse(pt(16, 10), u(2.15), u(2.15))
-        painter.drawRoundedRect(rect(14.25, 14, 3.5, 10), u(1.75), u(1.75))
-    elif kind == "lock" or kind == "unlock":
-        painter.setBrush(QColor("#ffffff"))
-        painter.drawRoundedRect(rect(8, 14, 16, 11), u(3), u(3))
-        set_pen(2)
-        if kind == "unlock":
-            painter.drawArc(rect(10, 7, 11, 11), 25 * 16, 230 * 16)
-        else:
-            painter.drawArc(rect(10, 7, 12, 12), 0, 180 * 16)
-        painter.drawLine(pt(10, 14), pt(10, 13))
-        painter.drawLine(pt(22, 14), pt(22, 13))
-        painter.setBrush(color)
-        painter.drawEllipse(pt(16, 19), u(1.3), u(1.3))
-        painter.drawLine(pt(16, 20.5), pt(16, 22.5))
-
-    painter.end()
-    return QIcon(pixmap)
-
-
-def make_page_icon(rotation=0):
-    pixmap = QPixmap(70, 94)
-    pixmap.fill(Qt.transparent)
-
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing)
-    painter.setPen(QPen(QColor("#cbd5e1"), 1))
-    painter.setBrush(QColor("#ffffff"))
-    painter.drawRoundedRect(QRectF(7, 5, 54, 78), 4, 4)
-    painter.setPen(QPen(QColor("#94a3b8"), 1))
-    painter.drawLine(QPointF(17, 28), QPointF(51, 28))
-    painter.drawLine(QPointF(17, 38), QPointF(46, 38))
-    painter.drawLine(QPointF(17, 48), QPointF(51, 48))
-
-    if rotation:
-        painter.setPen(QPen(QColor("#0f766e"), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-        painter.drawArc(QRectF(21, 56, 26, 18), 25 * 16, 280 * 16)
-        painter.drawLine(QPointF(46, 60), QPointF(51, 58))
-        painter.drawLine(QPointF(46, 60), QPointF(49, 65))
-
-    painter.end()
-    return QIcon(pixmap)
-
-
-class PageThumbnailList(QListWidget):
-    def __init__(self, owner):
-        super().__init__()
-        self.owner = owner
-        self.drop_indicator_row = None
-        self.drag_rows = []
-        self.setAcceptDrops(True)
-        self.setDragEnabled(True)
-        self.setDropIndicatorShown(True)
-        self.setDragDropMode(QAbstractItemView.DragDrop)
-        self.setDefaultDropAction(Qt.CopyAction)
-        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        # Fixed scrollbar policy: the vertical bar never toggles (it would change the width -> clipping),
-        # and thumbnails are always fitted to the width, so no horizontal scrolling.
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if event.size().width() != event.oldSize().width():
-            self.owner.schedule_thumbnail_refresh()
-
-    def startDrag(self, supported_actions):
-        self.drag_rows = self.drag_rows or self.selected_page_rows()
-        self.restore_drag_selection()
-        super().startDrag(Qt.CopyAction)
-
-    def mousePressEvent(self, event):
-        pressed_index = self.indexAt(event.pos())
-        selected_rows = self.selected_page_rows()
-
-        if event.button() == Qt.LeftButton and event.modifiers() & Qt.ControlModifier and pressed_index.isValid():
-            item = self.item(pressed_index.row())
-            if item is not None:
-                was_selected = item.isSelected()
-                item.setSelected(not was_selected)
-                if not was_selected:
-                    self.setCurrentItem(item)
-            self.drag_rows = []
-            event.accept()
-            return
-
-        if event.button() == Qt.LeftButton and pressed_index.isValid() and pressed_index.row() in selected_rows:
-            self.drag_rows = selected_rows
-        else:
-            self.drag_rows = []
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if len(self.drag_rows) > 1:
-            self.restore_drag_selection()
-        super().mouseMoveEvent(event)
-
-    def keyPressEvent(self, event):
-        if event.matches(QKeySequence.Undo):
-            self.owner.undo()
-            event.accept()
-            return
-        if event.matches(QKeySequence.Redo):
-            self.owner.redo()
-            event.accept()
-            return
-        if event.matches(QKeySequence.Save):
-            self.owner.save_current()
-            event.accept()
-            return
-        if event.matches(QKeySequence.Print):
-            self.owner.print_pdf()
-            event.accept()
-            return
-        if event.key() == Qt.Key_Delete and self.owner.selected_mark_index is not None:
-            self.owner.delete_selected_mark()
-            event.accept()
-            return
-        if event.matches(QKeySequence.Cut):
-            self.owner.cut_selected_pages()
-            return
-        if event.matches(QKeySequence.Copy):
-            self.owner.copy_selected_pages()
-            return
-        if event.matches(QKeySequence.Paste):
-            self.owner.paste_pages_after_current()
-            return
-        if event.key() == Qt.Key_Delete:
-            self.owner.delete_selected_pages()
-            return
-        super().keyPressEvent(event)
-
-    def contextMenuEvent(self, event):
-        menu = QMenu(self)
-        cut_action = menu.addAction("\uc798\ub77c\ub0b4\uae30")
-        copy_action = menu.addAction("\ubcf5\uc0ac\ud558\uae30")
-        paste_action = menu.addAction("\ubd99\uc5ec\ub123\uae30")
-        menu.addSeparator()
-        rotate_right_action = menu.addAction("\uc624\ub978\ucabd \ud68c\uc804")
-        rotate_left_action = menu.addAction("\uc67c\ucabd \ud68c\uc804")
-        menu.addSeparator()
-        delete_action = menu.addAction("\uc9c0\uc6b0\uae30")
-
-        has_selection = bool(self.selectedIndexes())
-        cut_action.setEnabled(has_selection)
-        copy_action.setEnabled(has_selection)
-        rotate_right_action.setEnabled(has_selection)
-        rotate_left_action.setEnabled(has_selection)
-        delete_action.setEnabled(has_selection)
-        paste_action.setEnabled(self.owner.has_clipboard_pages())
-
-        selected_action = menu.exec_(event.globalPos())
-        if selected_action == cut_action:
-            self.owner.cut_selected_pages()
-        elif selected_action == copy_action:
-            self.owner.copy_selected_pages()
-        elif selected_action == paste_action:
-            self.owner.paste_pages_after_current()
-        elif selected_action == rotate_right_action:
-            self.owner.rotate_selected_pages_right()
-        elif selected_action == rotate_left_action:
-            self.owner.rotate_selected_pages_left()
-        elif selected_action == delete_action:
-            self.owner.delete_selected_pages()
-
-    def dragEnterEvent(self, event: QDragEnterEvent):
-        if self.has_pdf_urls(event):
-            event.acceptProposedAction()
-            return
-        super().dragEnterEvent(event)
-
-    def dragMoveEvent(self, event):
-        if self.has_pdf_urls(event):
-            self.drop_indicator_row = self.drop_insert_row(event.pos())
-            self.viewport().update()
-            event.acceptProposedAction()
-            return
-        if event.source() is self:
-            self.drop_indicator_row = self.drop_insert_row(event.pos())
-            self.viewport().update()
-            event.setDropAction(Qt.CopyAction)
-            event.accept()
-            return
-        super().dragMoveEvent(event)
-
-    def dropEvent(self, event: QDropEvent):
-        if self.has_pdf_urls(event):
-            insert_row = self.drop_insert_row(event.pos())
-            self.drop_indicator_row = None
-            self.viewport().update()
-            self.owner.insert_pdf_files(self.pdf_paths_from_event(event), insert_row)
-            event.acceptProposedAction()
-            return
-        if event.source() is self:
-            self.move_selected_items_to_drop_position(event)
-            self.drop_indicator_row = None
-            self.viewport().update()
-            event.setDropAction(Qt.CopyAction)
-            event.accept()
-            return
-        super().dropEvent(event)
-        self.drop_indicator_row = None
-        self.viewport().update()
-        self.owner.after_page_order_changed()
-
-    def dragLeaveEvent(self, event):
-        self.drop_indicator_row = None
-        self.viewport().update()
-        super().dragLeaveEvent(event)
-
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        if self.drop_indicator_row is None:
-            return
-
-        y = self.drop_indicator_y(self.drop_indicator_row)
-        painter = QPainter(self.viewport())
-        pen = QPen(QColor("#d63b3b"), 2, Qt.DashLine)
-        painter.setPen(pen)
-        painter.drawLine(12, y, self.viewport().width() - 12, y)
-        painter.end()
-
-    def has_pdf_urls(self, event):
-        mime_data = event.mimeData()
-        return any(self.is_pdf_url(url) for url in mime_data.urls())
-
-    def pdf_paths_from_event(self, event):
-        return [url.toLocalFile() for url in event.mimeData().urls() if self.is_pdf_url(url)]
-
-    def is_pdf_url(self, url):
-        return url.isLocalFile() and url.toLocalFile().lower().endswith(".pdf")
-
-    def drop_insert_row(self, position):
-        target_index = self.indexAt(position)
-        if not target_index.isValid():
-            return self.drop_insert_row_from_gap(position)
-
-        target_row = target_index.row()
-        rect = self.visualItemRect(self.item(target_row))
-        if position.y() > rect.center().y():
-            return target_row + 1
-        return target_row
-
-    def drop_insert_row_from_gap(self, position):
-        if self.count() == 0:
-            return 0
-
-        for row in range(self.count()):
-            rect = self.visualItemRect(self.item(row))
-            if position.y() < rect.center().y():
-                return row
-        return self.count()
-
-    def drop_indicator_y(self, row):
-        if self.count() == 0:
-            return self.viewport().height() // 2
-
-        if row <= 0:
-            rect = self.visualItemRect(self.item(0))
-            return max(2, rect.top() - 4)
-
-        if row >= self.count():
-            rect = self.visualItemRect(self.item(self.count() - 1))
-            return min(self.viewport().height() - 2, rect.bottom() + 7)
-
-        rect = self.visualItemRect(self.item(row))
-        return max(2, rect.top() - 4)
-
-    def move_selected_items_to_drop_position(self, event):
-        selected_rows = self.drag_rows or self.selected_page_rows()
-        self.drag_rows = []
-        if not selected_rows:
-            return
-
-        target_row = self.drop_insert_row(event.pos())
-        self.owner.move_pages_by_rows(selected_rows, target_row)
-
-    def selected_page_rows(self):
-        return sorted({index.row() for index in self.selectedIndexes()})
-
-    def restore_drag_selection(self):
-        if not self.drag_rows:
-            return
-
-        self.blockSignals(True)
-        self.clearSelection()
-        for row in self.drag_rows:
-            item = self.item(row)
-            if item is not None:
-                item.setSelected(True)
-        self.blockSignals(False)
-
-
-class PdfScrollArea(QScrollArea):
-    def __init__(self, owner):
-        super().__init__()
-        self.owner = owner
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.owner.schedule_responsive_preview_refresh()
-
-    def wheelEvent(self, event):
-        if self.owner.page_count <= 0:
-            super().wheelEvent(event)
-            return
-
-        if event.modifiers() & Qt.ControlModifier:
-            if event.angleDelta().y() > 0:
-                self.owner.zoom_in(event.pos())
-            else:
-                self.owner.zoom_out(event.pos())
-        else:
-            if event.angleDelta().y() > 0:
-                self.owner.previous_page()
-            else:
-                self.owner.next_page()
-        event.accept()
-
-    def contextMenuEvent(self, event):
-        if self.owner.page_count <= 0:
-            return
-
-        menu = QMenu(self)
-        rotate_right = menu.addAction(make_tool_icon("rotate_right"), "\uc624\ub978\ucabd \ud68c\uc804")
-        rotate_left = menu.addAction(make_tool_icon("rotate_left"), "\uc67c\ucabd \ud68c\uc804")
-        menu.addSeparator()
-        rect_mark = menu.addAction(make_tool_icon("rect_mark"), "\ube68\uac04 \uc0ac\uac01\ud615")
-        highlight = menu.addAction(make_tool_icon("highlight"), "\ud615\uad11\ud39c")
-        stamp = menu.addAction(make_tool_icon("stamp"), "도장")
-        approval_stamp = menu.addAction(make_tool_icon("signature"), "결재 (내 서명)")
-        selected_action = menu.exec_(event.globalPos())
-        if selected_action == rotate_right:
-            self.owner.rotate_current_page(90)
-        elif selected_action == rotate_left:
-            self.owner.rotate_current_page(-90)
-        elif selected_action == rect_mark:
-            self.owner.enable_rectangle_mode()
-        elif selected_action == highlight:
-            self.owner.enable_highlight_mode()
-        elif selected_action == stamp:
-            self.owner.insert_default_stamp()
-        elif selected_action == approval_stamp:
-            self.owner.insert_signed_approval()
-
-
-class PdfCanvasLabel(QLabel):
-    def __init__(self, owner, text=""):
-        super().__init__(text)
-        self.owner = owner
-        self.drag_start = None
-        self.drag_rect = None
-        self.edit_mark_index = None
-        self.edit_action = None
-        self.edit_original_rect = None
-        self.edit_snapshot = None
-        self.pan_active = False
-        self.pan_last_pos = None
-        self.pan_last_global_pos = None
-        self.setFocusPolicy(Qt.StrongFocus)
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and self.owner.annotation_mode:
-            self.setFocus()
-            self.drag_start = event.pos()
-            self.drag_rect = QRectF(self.drag_start, self.drag_start)
-            self.owner.update_preview_drag_rect(self.drag_rect)
-            event.accept()
-            return
-
-        if event.button() == Qt.LeftButton:
-            hit = self.owner.hit_test_mark(event.pos())
-            if hit is not None:
-                mark_index, action = hit
-                self.setFocus()
-                self.drag_start = event.pos()
-                self.edit_mark_index = mark_index
-                self.edit_action = action
-                self.edit_original_rect = self.owner.current_mark_rect(mark_index)
-                self.edit_snapshot = self.owner.make_history_snapshot()
-                self.owner.select_mark(mark_index)
-                event.accept()
-                return
-            if self.owner.can_pan_preview():
-                self.setFocus()
-                self.pan_active = True
-                self.pan_last_pos = event.pos()
-                self.pan_last_global_pos = event.globalPos()
-                self.setCursor(Qt.ClosedHandCursor)
-                event.accept()
-                return
-            self.owner.select_mark(None)
-
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self.drag_start is not None and self.owner.annotation_mode:
-            self.drag_rect = QRectF(self.drag_start, event.pos()).normalized()
-            self.owner.update_preview_drag_rect(self.drag_rect)
-            event.accept()
-            return
-        if self.edit_mark_index is not None:
-            self.owner.update_existing_mark(
-                self.edit_mark_index,
-                self.edit_action,
-                self.drag_start,
-                event.pos(),
-                self.edit_original_rect,
-                refresh_icon=False,
-            )
-            event.accept()
-            return
-        if self.pan_active and self.pan_last_global_pos is not None:
-            delta = event.globalPos() - self.pan_last_global_pos
-            self.owner.pan_preview_by(delta)
-            self.pan_last_pos = event.pos()
-            self.pan_last_global_pos = event.globalPos()
-            event.accept()
-            return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton and self.drag_start is not None and self.owner.annotation_mode:
-            rect = QRectF(self.drag_start, event.pos()).normalized()
-            self.drag_start = None
-            self.drag_rect = None
-            self.owner.finish_preview_annotation(rect)
-            event.accept()
-            return
-        if event.button() == Qt.LeftButton and self.edit_mark_index is not None:
-            if self.edit_snapshot is not None and event.pos() != self.drag_start:
-                self.owner.push_undo_snapshot(self.edit_snapshot)
-            self.owner.update_existing_mark(
-                self.edit_mark_index,
-                self.edit_action,
-                self.drag_start,
-                event.pos(),
-                self.edit_original_rect,
-                refresh_icon=True,
-            )
-            self.drag_start = None
-            self.edit_mark_index = None
-            self.edit_action = None
-            self.edit_original_rect = None
-            self.edit_snapshot = None
-            event.accept()
-            return
-        if event.button() == Qt.LeftButton and self.pan_active:
-            self.pan_active = False
-            self.pan_last_pos = None
-            self.pan_last_global_pos = None
-            self.owner.update_preview_cursor()
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
-    def keyPressEvent(self, event):
-        if event.matches(QKeySequence.Undo):
-            self.owner.undo()
-            event.accept()
-            return
-        if event.matches(QKeySequence.Redo):
-            self.owner.redo()
-            event.accept()
-            return
-        if event.matches(QKeySequence.Save):
-            self.owner.save_current()
-            event.accept()
-            return
-        if event.matches(QKeySequence.Print):
-            self.owner.print_pdf()
-            event.accept()
-            return
-        if event.key() == Qt.Key_Delete and self.owner.selected_mark_index is not None:
-            self.owner.delete_selected_mark()
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-
-class SignaturePad(QWidget):
-    """Mouse-drawn signature canvas. Exports a trimmed transparent PNG."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumSize(460, 180)
-        self.setCursor(Qt.CrossCursor)
-        self.strokes = []
-        self.background_image = QImage()
-        self.pen_color = QColor("#0b1f4d")
-        self.pen_width = 3.2
-
-    def clear(self):
-        self.strokes = []
-        self.background_image = QImage()
-        self.update()
-
-    def load_image(self, path):
-        image = QImage(str(path))
-        if image.isNull():
-            return False
-        self.strokes = []
-        self.background_image = image.convertToFormat(QImage.Format_ARGB32)
-        self.update()
-        return True
-
-    def is_empty(self):
-        return not self.strokes and self.background_image.isNull()
-
-    def image_target_rect(self):
-        if self.background_image.isNull():
-            return QRectF()
-        area = QRectF(self.rect()).adjusted(16, 12, -16, -12)
-        size = self.background_image.size()
-        scale = min(area.width() / max(1, size.width()), area.height() / max(1, size.height()))
-        width = size.width() * scale
-        height = size.height() * scale
-        return QRectF(area.center().x() - width / 2, area.center().y() - height / 2, width, height)
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.strokes.append([QPointF(event.pos())])
-            self.update()
-
-    def mouseMoveEvent(self, event):
-        if event.buttons() & Qt.LeftButton and self.strokes:
-            self.strokes[-1].append(QPointF(event.pos()))
-            self.update()
-
-    def paint_content(self, painter):
-        painter.setRenderHint(QPainter.Antialiasing)
-        if not self.background_image.isNull():
-            painter.drawImage(self.image_target_rect(), self.background_image)
-        painter.setPen(QPen(self.pen_color, self.pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-        painter.setBrush(Qt.NoBrush)
-        for stroke in self.strokes:
-            if len(stroke) == 1:
-                painter.drawPoint(stroke[0])
-                continue
-            path = QPainterPath(stroke[0])
-            for point in stroke[1:]:
-                path.lineTo(point)
-            painter.drawPath(path)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#ffffff"))
-        painter.setPen(QPen(QColor("#cbd5e1"), 1, Qt.DashLine))
-        baseline_y = self.height() - 36
-        painter.drawLine(QPointF(24, baseline_y), QPointF(self.width() - 24, baseline_y))
-        if self.is_empty():
-            painter.setPen(QColor("#94a3b8"))
-            painter.drawText(self.rect(), Qt.AlignCenter, "여기에 마우스로 서명하세요")
-        self.paint_content(painter)
-        painter.end()
-
-    def to_image(self):
-        image = QImage(self.size(), QImage.Format_ARGB32)
-        image.fill(Qt.transparent)
-        painter = QPainter(image)
-        self.paint_content(painter)
-        painter.end()
-        return self.trim_image(image)
-
-    @staticmethod
-    def trim_image(image):
-        left, top, right, bottom = image.width(), image.height(), -1, -1
-        for y in range(image.height()):
-            for x in range(image.width()):
-                if QColor.fromRgba(image.pixel(x, y)).alpha() > 8:
-                    left = min(left, x)
-                    right = max(right, x)
-                    top = min(top, y)
-                    bottom = max(bottom, y)
-        if right < left or bottom < top:
-            return image
-        margin = 6
-        left = max(0, left - margin)
-        top = max(0, top - margin)
-        right = min(image.width() - 1, right + margin)
-        bottom = min(image.height() - 1, bottom + margin)
-        return image.copy(left, top, right - left + 1, bottom - top + 1)
-
-
-class SignatureDialog(QDialog):
-    def __init__(self, owner):
-        super().__init__(owner)
-        self.owner = owner
-        self.setWindowTitle("결재 서명 등록")
-        self.setModal(True)
-        self.setMinimumWidth(520)
-        layout = QVBoxLayout(self)
-        layout.setSpacing(10)
-
-        hint = QLabel("본인 서명을 마우스로 그리거나 서명 이미지를 불러온 뒤 저장하세요.")
-        hint.setObjectName("panelHint")
-        layout.addWidget(hint)
-
-        self.pad = SignaturePad(self)
-        self.pad.setObjectName("signaturePad")
-        existing = owner.signature_settings.get("image")
-        if existing:
-            self.pad.load_image(existing)
-        layout.addWidget(self.pad)
-
-        tools = QHBoxLayout()
-        self.clear_button = QPushButton("지우기")
-        self.load_button = QPushButton("이미지 불러오기…")
-        self.clear_button.clicked.connect(self.pad.clear)
-        self.load_button.clicked.connect(self.load_image)
-        tools.addWidget(self.clear_button)
-        tools.addWidget(self.load_button)
-        tools.addStretch(1)
-        layout.addLayout(tools)
-
-        form = QFormLayout()
-        self.line_edit = QLineEdit(", ".join(owner.approval_line))
-        self.line_edit.setPlaceholderText("예: 담당, 검토, 승인")
-        self.cell_combo = QComboBox()
-        self.line_edit.textChanged.connect(self.refresh_cells)
-        form.addRow("결재선", self.line_edit)
-        form.addRow("내 서명 칸", self.cell_combo)
-        layout.addLayout(form)
-        self.refresh_cells()
-        self.cell_combo.setCurrentIndex(min(owner.signature_settings.get("cell", 0), self.cell_combo.count() - 1))
-
-        buttons = QDialogButtonBox()
-        self.save_button = buttons.addButton("저장", QDialogButtonBox.AcceptRole)
-        buttons.addButton("취소", QDialogButtonBox.RejectRole)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def refresh_cells(self, *args):
-        current = self.cell_combo.currentIndex()
-        labels = normalize_approval_line(self.line_edit.text())
-        self.cell_combo.blockSignals(True)
-        self.cell_combo.clear()
-        self.cell_combo.addItems(list(labels))
-        self.cell_combo.setCurrentIndex(max(0, min(current, len(labels) - 1)))
-        self.cell_combo.blockSignals(False)
-
-    def load_image(self):
-        path, _ = QFileDialog.getOpenFileName(self, "서명 이미지 불러오기", "", "이미지 (*.png *.jpg *.jpeg *.bmp)")
-        if path and not self.pad.load_image(path):
-            QMessageBox.warning(self, "서명 이미지", "이미지를 읽을 수 없습니다.")
-
-    def accept(self):
-        if self.pad.is_empty():
-            QMessageBox.warning(self, "결재 서명 등록", "서명을 그리거나 이미지를 불러와 주세요.")
-            return
-        super().accept()
-
-    def result_values(self):
-        return self.pad.to_image(), self.line_edit.text(), self.cell_combo.currentIndex()
-
-
-class StampSettingsDialog(QDialog):
-    def __init__(self, owner):
-        super().__init__(owner)
-        self.owner = owner
-        self.insert_after_save = False
-        self.setWindowTitle("도장 설정")
-        self.setModal(True)
-        self.setMinimumWidth(560)
-        settings = owner.stamp_settings
-        layout = QVBoxLayout(self)
-        layout.setSpacing(10)
-
-        self.preview = QLabel()
-        self.preview.setObjectName("pageCanvas")
-        self.preview.setAlignment(Qt.AlignCenter)
-        self.preview.setFixedSize(360, 170)
-        layout.addWidget(self.preview, 0, Qt.AlignHCenter)
-
-        form = QFormLayout()
-        image_row = QHBoxLayout()
-        self.image_combo = QComboBox()
-        self.image_combo.setIconSize(QSize(28, 28))
-        self.image_combo.setMinimumWidth(170)
-        self.image_combo.currentIndexChanged.connect(self.update_preview)
-        self.add_button = QPushButton("불러오기…")
-        self.remove_button = QPushButton("목록에서 삭제")
-        self.add_button.clicked.connect(self.add_image)
-        self.remove_button.clicked.connect(self.remove_image)
-        image_row.addWidget(self.image_combo, 1)
-        image_row.addWidget(self.add_button)
-        image_row.addWidget(self.remove_button)
-        form.addRow("도장 이미지", image_row)
-
-        self.transparent_check = QCheckBox("불러올 때 흰 배경을 투명하게")
-        self.transparent_check.setChecked(True)
-        form.addRow("", self.transparent_check)
-
-        self.size_spin = QSpinBox()
-        self.size_spin.setRange(5, 60)
-        self.size_spin.setSuffix(" % (페이지 너비 기준)")
-        self.size_spin.setValue(settings["width_percent"])
-        form.addRow("크기", self.size_spin)
-
-        self.opacity_spin = QSpinBox()
-        self.opacity_spin.setRange(20, 100)
-        self.opacity_spin.setSuffix(" %")
-        self.opacity_spin.setValue(settings["opacity_percent"])
-        self.opacity_spin.valueChanged.connect(self.update_preview)
-        form.addRow("불투명도", self.opacity_spin)
-
-        self.position_combo = QComboBox()
-        for key, label in STAMP_POSITIONS:
-            self.position_combo.addItem(label, key)
-        self.position_combo.setCurrentIndex(max(0, self.position_combo.findData(settings["position"])))
-        form.addRow("기본 위치", self.position_combo)
-        layout.addLayout(form)
-
-        buttons = QDialogButtonBox()
-        self.save_insert_button = buttons.addButton("저장 후 삽입", QDialogButtonBox.ActionRole)
-        self.save_button = buttons.addButton("저장", QDialogButtonBox.AcceptRole)
-        buttons.addButton("취소", QDialogButtonBox.RejectRole)
-        self.save_insert_button.clicked.connect(self.save_and_insert)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-        self.reload_images(settings["image"])
-
-    def reload_images(self, selected_path=""):
-        self.image_combo.blockSignals(True)
-        self.image_combo.clear()
-        for index, path in enumerate(self.owner.stamp_image_paths, start=1):
-            self.image_combo.addItem(QIcon(path), f"도장 {index}", path)
-        found = self.image_combo.findData(selected_path) if selected_path else -1
-        if found < 0 and self.image_combo.count():
-            found = self.image_combo.count() - 1
-        self.image_combo.setCurrentIndex(found)
-        self.image_combo.blockSignals(False)
-        self.remove_button.setEnabled(self.image_combo.count() > 0)
-        self.save_insert_button.setEnabled(self.image_combo.count() > 0)
-        self.update_preview()
-
-    def selected_image(self):
-        return self.image_combo.currentData() or ""
-
-    def update_preview(self, *args):
-        path = self.selected_image()
-        pixmap = QPixmap(path) if path else QPixmap()
-        if pixmap.isNull():
-            self.preview.setPixmap(QPixmap())
-            self.preview.setText("등록된 도장이 없습니다.\n[불러오기…]로 PNG/JPG 도장을 추가하세요.")
-            return
-        canvas = QPixmap(self.preview.size())
-        canvas.fill(QColor("#ffffff"))
-        scaled = pixmap.scaled(self.preview.width() - 40, self.preview.height() - 30, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        painter = QPainter(canvas)
-        painter.setOpacity(self.opacity_spin.value() / 100)
-        painter.drawPixmap((canvas.width() - scaled.width()) // 2, (canvas.height() - scaled.height()) // 2, scaled)
-        painter.end()
-        self.preview.setPixmap(canvas)
-
-    def add_image(self):
-        path, _ = QFileDialog.getOpenFileName(self, "도장 이미지 불러오기", "", "이미지 (*.png *.jpg *.jpeg *.bmp)")
-        if not path:
-            return
-        try:
-            stored = self.owner.store_png_stamp(path, remove_background=self.transparent_check.isChecked())
-        except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "도장 이미지", str(exc))
-            return
-        self.reload_images(stored)
-
-    def remove_image(self):
-        path = self.selected_image()
-        if not path:
-            return
-        self.owner.stamp_image_paths = [item for item in self.owner.stamp_image_paths if item != path]
-        self.owner.save_stamp_preferences()
-        self.reload_images()
-
-    def values(self):
-        return {
-            "image": self.selected_image(),
-            "width_percent": self.size_spin.value(),
-            "opacity_percent": self.opacity_spin.value(),
-            "position": self.position_combo.currentData(),
-        }
-
-    def save_and_insert(self):
-        self.insert_after_save = True
-        self.accept()
-
-
-
-class PdfPreviewer(QMainWindow):
+class PdfPreviewer(PdfExportMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.current_pdf_path = None
@@ -1851,6 +501,7 @@ class PdfPreviewer(QMainWindow):
         self.preview_content_rect = QRectF()
         self.preview_content_size = QSize()
         self.last_thumbnail_layout = None
+        self.thumbnail_view_anchor = None  # (current page visible?, scroll fraction) from before a panel resize
         self.pdf_passwords = {}
         self.approval_line, self.stamp_image_paths = load_user_preferences()
         self.stamp_settings = load_stamp_settings()
@@ -1881,6 +532,14 @@ class PdfPreviewer(QMainWindow):
         self.thumbnail_refresh_timer = QTimer(self)
         self.thumbnail_refresh_timer.setSingleShot(True)
         self.thumbnail_refresh_timer.timeout.connect(self._flush_thumbnail_refresh)
+        # Ctrl+wheel zoom: show a scaled copy immediately, render sharply once the wheel pauses.
+        self.zoom_render_timer = QTimer(self)
+        self.zoom_render_timer.setSingleShot(True)
+        self.zoom_render_timer.timeout.connect(self._flush_zoom_render)
+        self.zoom_render_anchor = None
+        self.preview_page_pixmap = None
+        self.preview_pixmap_zoom = None
+        self.wheel_page_remainder = 0
 
         self.setWindowTitle(APP_TITLE)
         self.setWindowIcon(load_app_icon())
@@ -2296,7 +955,8 @@ class PdfPreviewer(QMainWindow):
             action = QAction(make_tool_icon(icon_key), label, self)
         else:
             action = QAction(self.style().standardIcon(icon_key), label, self)
-        action.triggered.connect(handler)
+        # triggered(bool checked) would otherwise land in optional parameters (zoom_in(anchor_pos=False) crashed).
+        action.triggered.connect(lambda _checked=False, target=handler: target())
         if shortcut is not None:
             action.setShortcut(shortcut)
         action.setToolTip(label)
@@ -2379,7 +1039,7 @@ class PdfPreviewer(QMainWindow):
         self.refresh_page_numbers()
         self.page_list.setCurrentRow(0)
         self.show_page(0)
-        self.setWindowTitle(f"{APP_TITLE} - {Path(path).name}")
+        self.setWindowTitle(Path(path).name)
         self.set_status(f"\uc5f4\ub9bc: {path}")
 
     def add_pdf_pages_to_list(self, path):
@@ -2401,90 +1061,14 @@ class PdfPreviewer(QMainWindow):
         return item
 
     def placeholder_page_icon(self, rotation=0):
-        cache_key = rotation % 360
+        size = (self.thumbnail_canvas_width, self.thumbnail_canvas_height)
+        cache_key = (rotation % 360, size)
         icon = self.placeholder_icon_cache.get(cache_key)
         if icon is None:
-            icon = make_page_icon(cache_key)
+            icon = make_page_icon(cache_key[0], size)
             self.placeholder_icon_cache[cache_key] = icon
         return icon
 
-    def _page_refs_for_pdf_with_password_legacy(self, path):
-        path = str(Path(path))
-        cached_password = self.pdf_passwords.get(path, "")
-        try:
-            refs = page_refs_for_pdf(path, cached_password)
-            if cached_password:
-                self.pdf_passwords[path] = cached_password
-            return refs
-        except Exception as first_error:
-            self.pdf_passwords.pop(path, None)
-            last_error = first_error
-            prompt = (
-                f"{Path(path).name}\n"
-                "암호가 필요하거나 파일을 열 수 없습니다.\n"
-                "PDF 암호를 입력하세요."
-            )
-            while True:
-                password, ok = QInputDialog.getText(
-                    self,
-                    "암호 PDF",
-                    prompt,
-                    QLineEdit.Password,
-                )
-                if not ok:
-                    return None
-
-                try:
-                    refs = page_refs_for_pdf(path, password)
-                    self.pdf_passwords[path] = password
-                    return refs
-                except Exception as error:
-                    last_error = error
-                    QMessageBox.warning(
-                        self,
-                        "암호 확인",
-                        f"{Path(path).name}\n\n암호가 맞지 않거나 파일을 열 수 없습니다.\n다시 입력해 주세요.",
-                    )
-                    prompt = (
-                        f"{Path(path).name}\n"
-                        "암호가 맞지 않습니다.\n"
-                        "PDF 암호를 다시 입력하세요."
-                    )
-
-            self.show_error(
-                "PDF 열기 오류",
-                f"{Path(path).name}\n\n암호를 확인하거나 파일 상태를 확인해주세요.\n\n{last_error}",
-            )
-            return None
-
-    def page_refs_for_pdf_with_password_old(self, path):
-        path = str(Path(path))
-        cached_password = self.pdf_passwords.get(path, "")
-        try:
-            refs = page_refs_for_pdf(path, cached_password)
-            if cached_password:
-                self.pdf_passwords[path] = cached_password
-            return refs
-        except Exception as first_error:
-            password, ok = QInputDialog.getText(
-                self,
-                "\uc554\ud638 PDF",
-                f"{Path(path).name}\n\uc554\ud638\uac00 \ud544\uc694\ud558\uac70\ub098 \ud30c\uc77c\uc744 \uc5f4 \uc218 \uc5c6\uc2b5\ub2c8\ub2e4.\nPDF \uc554\ud638\ub97c \uc785\ub825\ud558\uc138\uc694.",
-                QLineEdit.Password,
-            )
-            if not ok:
-                return None
-
-            try:
-                refs = page_refs_for_pdf(path, password)
-                self.pdf_passwords[path] = password
-                return refs
-            except Exception as second_error:
-                self.show_error(
-                    "PDF \uc5f4\uae30 \uc624\ub958",
-                    f"{Path(path).name}\n\n\uc554\ud638\ub97c \ud655\uc778\ud558\uac70\ub098 \ud30c\uc77c \uc0c1\ud0dc\ub97c \ud655\uc778\ud574\uc8fc\uc138\uc694.\n\n{second_error or first_error}",
-                )
-                return None
 
     def page_refs_for_pdf_with_password(self, path):
         path = str(Path(path))
@@ -2559,6 +1143,10 @@ class PdfPreviewer(QMainWindow):
         self.refresh_page_numbers()
         self.schedule_thumbnail_refresh()
         if was_empty:
+            # Opening into an empty window (double-click / 연결 프로그램 / drag) is "open", not an undoable edit.
+            self.undo_stack.clear()
+            self.redo_stack.clear()
+            self.setWindowTitle(Path(valid_paths[0]).name)
             self.page_list.setCurrentRow(0)
             self.show_page(0)
         else:
@@ -2801,9 +1389,12 @@ class PdfPreviewer(QMainWindow):
             self.selected_mark_index = None
         self.current_page_index = index
         self.update_zoom_for_page(page_ref)
+        self.zoom_render_timer.stop()  # this render is already at the current zoom
         pixmap = self.render_page_pixmap(page_ref, self.zoom, self.selected_mark_index)
         if self.preview_drag_rect is not None:
             self.draw_page_marks(pixmap, (), self.preview_drag_rect)
+        self.preview_page_pixmap = pixmap
+        self.preview_pixmap_zoom = self.zoom
         preview_canvas = self.create_preview_canvas(pixmap)
         self.page_label.setPixmap(preview_canvas)
         self.page_label.setFixedSize(preview_canvas.size())
@@ -2872,16 +1463,26 @@ class PdfPreviewer(QMainWindow):
 
     THUMBNAIL_ITEM_CHROME = 14  # #pageList::item padding (3px x2) + border (1px x2) + Qt item margins
     THUMBNAIL_SIDE_MARGIN = 4
+    THUMBNAIL_MIN_CELL = 170  # widen the panel: a 2nd column once two cells this wide fit, a 3rd at three, ...
+    THUMBNAIL_MAX_CANVAS = 228
+
+    def thumbnail_columns(self, viewport_width=None):
+        if viewport_width is None:
+            viewport_width = self.page_list.viewport().width()
+        return max(1, int(viewport_width) // self.THUMBNAIL_MIN_CELL)
 
     def update_thumbnail_layout(self):
-        # One centered column that always fits the real viewport width (scrollbar/frame excluded).
+        # Responsive grid that always fits the real viewport width (scrollbar/frame excluded):
+        # one centered column in a narrow panel, then 2, 3, ... equal columns, each thumbnail centered in its cell.
         viewport_width = max(60, self.page_list.viewport().width())
-        grid_width = viewport_width
-        canvas_width = max(48, min(228, grid_width - self.THUMBNAIL_ITEM_CHROME - 2 * self.THUMBNAIL_SIDE_MARGIN))
+        columns = self.thumbnail_columns(viewport_width)
+        # Qt wraps a line when it reaches the viewport edge exactly, so a grid of N columns keeps 1px spare
+        grid_width = viewport_width if columns == 1 else (viewport_width - 1) // columns
+        canvas_width = max(48, min(self.THUMBNAIL_MAX_CANVAS, grid_width - self.THUMBNAIL_ITEM_CHROME - 2 * self.THUMBNAIL_SIDE_MARGIN))
         item_width = canvas_width - 8
         item_height = int(item_width * 1.42)
         canvas_height = item_height + 6
-        layout_signature = (grid_width, item_width, item_height, canvas_width, canvas_height)
+        layout_signature = (columns, grid_width, item_width, item_height, canvas_width, canvas_height)
 
         if self.last_thumbnail_layout == layout_signature:
             return False
@@ -2891,20 +1492,53 @@ class PdfPreviewer(QMainWindow):
         self.thumbnail_canvas_width = canvas_width
         self.thumbnail_canvas_height = canvas_height
         self.last_thumbnail_layout = layout_signature
+        self.thumbnail_column_count = columns
         self.page_list.setIconSize(QSize(canvas_width, canvas_height))
         self.page_list.setGridSize(QSize(grid_width, canvas_height + 32))
         return True
 
+    def thumbnail_cell_bounds(self, rect):
+        """Left/right edge of the grid column a thumbnail sits in (the whole viewport when there is one column)."""
+        viewport_width = self.page_list.viewport().width()
+        grid_width = max(1, self.page_list.gridSize().width())
+        columns = max(1, viewport_width // grid_width)
+        if columns == 1:
+            return 0, viewport_width - 1
+        column = min(columns - 1, max(0, rect.center().x() // grid_width))
+        return column * grid_width, (column + 1) * grid_width - 1
+
+    def thumbnails_off_center(self, rows=None):
+        viewport_width = self.page_list.viewport().width()
+        rows = range(self.page_list.count()) if rows is None else rows
+        for row in rows:
+            rect = self.page_list.visualRect(self.page_list.model().index(row, 0))
+            if not rect.isValid():
+                continue
+            left, right = self.thumbnail_cell_bounds(rect)
+            if abs((rect.left() - left) - (right - rect.right())) > 2 or rect.right() >= viewport_width or rect.left() < 0:
+                return True
+        return False
+
     def ensure_thumbnails_centered(self):
-        # Snap movement keeps item positions from older layouts; re-layout when the first item is off-center.
+        # Snap movement keeps item positions from older layouts; re-layout when any visible item is off-center
+        # (checking only the first item missed rows further down the list).
         if self.page_list.count() == 0:
             return
-        rect = self.page_list.visualRect(self.page_list.model().index(0, 0))
-        viewport_width = self.page_list.viewport().width()
-        if abs(rect.left() - (viewport_width - 1 - rect.right())) > 2 or rect.right() >= viewport_width:
+        if self.thumbnails_off_center(set(self.visible_thumbnail_rows()) | {0}):
             self.page_list.doItemsLayout()
 
+    def thumbnail_view_state(self):
+        """What the user is looking at in the thumbnail list: (current page on screen?, scroll position 0..1)."""
+        bar = self.page_list.verticalScrollBar()
+        item = self.page_list.currentItem()
+        current_visible = item is not None and self.page_list.visualItemRect(item).intersects(self.page_list.viewport().rect())
+        return current_visible, (bar.value() / bar.maximum() if bar.maximum() > 0 else 0.0)
+
     def refresh_thumbnail_icons(self):
+        # the state from before the panel was resized (recorded by the list), else the state right now
+        keep_current, scroll_fraction = self.thumbnail_view_anchor or self.thumbnail_view_state()
+        self.thumbnail_view_anchor = None
+        bar = self.page_list.verticalScrollBar()
         layout_changed = self.update_thumbnail_layout()
         if layout_changed:
             self.thumbnail_cache.clear()
@@ -2926,6 +1560,11 @@ class PdfPreviewer(QMainWindow):
 
         if layout_changed:
             self.page_list.doItemsLayout()
+            # column count / size changed: keep the current page in view (else the same relative spot)
+            if keep_current and self.page_list.currentItem() is not None:
+                self.page_list.scrollToItem(self.page_list.currentItem(), QListWidget.EnsureVisible)
+            elif bar.maximum() > 0:
+                bar.setValue(round(scroll_fraction * bar.maximum()))
         else:
             self.ensure_thumbnails_centered()
 
@@ -2956,7 +1595,7 @@ class PdfPreviewer(QMainWindow):
                     rows.add(index.row())
                     rows.add(min(self.page_list.count() - 1, index.row() + 1))
 
-        return sorted(row for row in rows if 0 <= row < self.page_list.count())[:40]
+        return sorted(row for row in rows if 0 <= row < self.page_list.count())[:60]
 
     def schedule_thumbnail_refresh(self, *args):
         if self.thumbnail_refresh_pending:
@@ -2978,6 +1617,8 @@ class PdfPreviewer(QMainWindow):
 
     def _flush_responsive_preview_refresh(self):
         self.preview_refresh_pending = False
+        if self.zoom_render_timer.isActive():
+            return  # a wheel zoom is in progress; its final render covers the new viewport size
         self.refresh_responsive_preview()
 
     def update_zoom_for_page(self, page_ref):
@@ -3004,14 +1645,18 @@ class PdfPreviewer(QMainWindow):
         if cached_size is not None:
             return cached_size
 
-        with pdfium.PdfDocument(page_ref.path, password=self.password_for_page_ref(page_ref) or None) as doc:
-            width, height = doc[page_ref.page_index].get_size()
-
-        if page_ref.rotation in (90, 270):
-            width, height = height, width
-
-        self.page_size_cache[cache_key] = (width, height)
-        return width, height
+        # One document open fills every page of this file (sizes come from the page tree, no page loading):
+        # opening an 80-page PDF used to open the document once per page here.
+        sizes = pdf_page_sizes(page_ref.path, self.password_for_page_ref(page_ref))
+        for index, (width, height) in enumerate(sizes):
+            for rotation in (0, 90, 180, 270):
+                self.page_size_cache[(page_ref.path, index, rotation)] = (
+                    (height, width) if rotation in (90, 270) else (width, height)
+                )
+        cached_size = self.page_size_cache.get(cache_key)
+        if cached_size is None:
+            raise IndexError(f"page {page_ref.page_index + 1} not in {page_ref.path}")
+        return cached_size
 
     def render_page_pixmap(self, page_ref, scale, selected_mark_index=None):
         cache_key = (page_ref.path, page_ref.page_index, page_ref.rotation, round(scale, 3))
@@ -3019,20 +1664,26 @@ class PdfPreviewer(QMainWindow):
         if cached_pixmap is None:
             with pdfium.PdfDocument(page_ref.path, password=self.password_for_page_ref(page_ref) or None) as doc:
                 page = doc[page_ref.page_index]
-                bitmap = page.render(scale=scale, rotation=page_ref.rotation)
-                image = bitmap.to_pil().convert("RGBA")
+                qimage = pdfium_page_to_qimage(page, scale, page_ref.rotation)
 
-            width, height = image.size
-            data = image.tobytes("raw", "RGBA")
-            qimage = QImage(data, width, height, width * 4, QImage.Format_RGBA8888).copy()
             cached_pixmap = QPixmap.fromImage(qimage)
-            if len(self.page_render_cache) >= 24:
-                self.page_render_cache.clear()
             self.page_render_cache[cache_key] = cached_pixmap
+            self.trim_page_render_cache()
+        else:
+            self.page_render_cache[cache_key] = self.page_render_cache.pop(cache_key)  # most recently used
 
         pixmap = cached_pixmap.copy()
         self.draw_page_marks(pixmap, page_ref.marks, selected_mark_index=selected_mark_index)
         return pixmap
+
+    def trim_page_render_cache(self):
+        """Drop the least recently used renders beyond RENDER_CACHE_MAX_ITEMS or RENDER_CACHE_MAX_BYTES
+        (the newest render always stays, so a single huge zoomed page still works)."""
+        cache = self.page_render_cache
+        total = sum(pixmap.width() * pixmap.height() * 4 for pixmap in cache.values())
+        while len(cache) > 1 and (len(cache) > RENDER_CACHE_MAX_ITEMS or total > RENDER_CACHE_MAX_BYTES):
+            oldest = cache.pop(next(iter(cache)))
+            total -= oldest.width() * oldest.height() * 4
 
     def draw_page_marks(self, pixmap, marks, drag_rect=None, selected_mark_index=None):
         if not marks and drag_rect is None:
@@ -3186,13 +1837,72 @@ class PdfPreviewer(QMainWindow):
     def next_page(self):
         self.show_page(min(self.page_count - 1, self.current_page_index + 1))
 
+    ZOOM_MIN = 0.35
+    ZOOM_MAX = 3.0
+    ZOOM_STEP = 0.15
+    ZOOM_SETTLE_MS = 160
+
     def zoom_in(self, anchor_pos=None):
-        self.zoom_factor = min(3.0, self.zoom_factor + 0.15)
+        self.zoom_factor = min(self.ZOOM_MAX, self.zoom_factor + self.ZOOM_STEP)
         self.update_zoom(anchor_pos)
 
     def zoom_out(self, anchor_pos=None):
-        self.zoom_factor = max(0.35, self.zoom_factor - 0.15)
+        self.zoom_factor = max(self.ZOOM_MIN, self.zoom_factor - self.ZOOM_STEP)
         self.update_zoom(anchor_pos)
+
+    def wheel_zoom(self, delta_y, anchor_pos):
+        """Ctrl+wheel: one notch (120) = one zoom step; hi-res wheels/touchpads send fractions of a notch."""
+        if not delta_y or self.page_count <= 0:
+            return
+        factor = min(self.ZOOM_MAX, max(self.ZOOM_MIN, self.zoom_factor + self.ZOOM_STEP * delta_y / 120.0))
+        if abs(factor - self.zoom_factor) < 1e-9:
+            return
+        self.zoom_factor = factor
+        self.zoom_render_anchor = QPoint(anchor_pos)
+        if not self.show_scaled_preview(anchor_pos):
+            self.update_zoom(anchor_pos)
+            return
+        self.zoom_render_timer.start(self.ZOOM_SETTLE_MS)
+
+    def show_scaled_preview(self, anchor_pos):
+        """Instant zoom feedback: rescale the last rendered page instead of rendering the PDF for every wheel step."""
+        base = self.preview_page_pixmap
+        _, page_ref = self.current_page_item_and_ref()
+        if base is None or base.isNull() or not self.preview_pixmap_zoom or page_ref is None:
+            return False
+        anchor_state = self.capture_zoom_anchor(anchor_pos)
+        self.update_zoom_for_page(page_ref)
+        ratio = self.zoom / self.preview_pixmap_zoom
+        size = QSize(max(1, int(round(base.width() * ratio))), max(1, int(round(base.height() * ratio))))
+        scaled = base.scaled(size, Qt.IgnoreAspectRatio, Qt.FastTransformation)
+        canvas = self.create_preview_canvas(scaled)
+        self.page_label.setPixmap(canvas)
+        self.page_label.setFixedSize(canvas.size())
+        self.restore_zoom_anchor(anchor_state)
+        self.update_preview_cursor()
+        return True
+
+    def _flush_zoom_render(self):
+        if self.page_count > 0:
+            self.update_zoom(self.zoom_render_anchor)
+
+    def wheel_page(self, delta_y):
+        """Plain wheel over the page: one notch = one page (fractions accumulate)."""
+        if self.page_count <= 0 or not delta_y:
+            return
+        if (self.wheel_page_remainder > 0) != (delta_y > 0):
+            self.wheel_page_remainder = 0
+        self.wheel_page_remainder += delta_y
+        while abs(self.wheel_page_remainder) >= 120:
+            step = -1 if self.wheel_page_remainder > 0 else 1
+            self.wheel_page_remainder += 120 if step > 0 else -120
+            target = min(self.page_count - 1, max(0, self.current_page_index + step))
+            if target == self.current_page_index:
+                self.wheel_page_remainder = 0
+                break
+            self.show_page(target)
+            bar = self.scroll_area.verticalScrollBar()
+            bar.setValue(bar.minimum() if step > 0 else bar.maximum())
 
     def update_zoom(self, anchor_pos=None):
         if self.page_count:
@@ -3765,9 +2475,60 @@ class PdfPreviewer(QMainWindow):
         if not output_path:
             return
 
-        self.write_ordered_pdf(output_path, self.ordered_page_refs())
+        if not self.write_pdf_safely(output_path, self.ordered_page_refs(), "\uc800\uc7a5 \uc624\ub958"):
+            return
         self.current_pdf_path = output_path
+        self.setWindowTitle(Path(output_path).name)  # title follows 다른 이름으로 저장
+        self.reload_if_overwritten(output_path)
         self.set_status(f"\uc800\uc7a5\ub428: {output_path}")
+
+    def write_pdf_safely(self, output_path, page_refs, error_title, password=None):
+        """Write via a temp file in the target folder, then replace: a failed write never truncates the target
+        (it may be one of the source files) and errors become a message instead of an unhandled exception."""
+        output_path = str(Path(output_path))
+        temp_path = None
+        try:
+            output_dir = Path(output_path).parent
+            output_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf", dir=output_dir) as temp_file:
+                temp_path = temp_file.name
+            self.write_ordered_pdf(temp_path, page_refs, password=password)
+            os.replace(temp_path, output_path)
+            return True
+        except Exception as exc:
+            if temp_path and Path(temp_path).exists():
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            self.show_error(error_title, str(exc))
+            return False
+
+    def reload_if_overwritten(self, output_path, force=False):
+        """Pages are references (file, page index, rotation, marks). If the saved file was one of the sources,
+        the references now point into the new content: reload it so pages are not shifted, rotated twice or
+        stamped twice on the next save."""
+        output_key = os.path.normcase(str(Path(output_path).resolve()))
+        sources = {os.path.normcase(str(Path(ref.path).resolve())) for ref in self.ordered_page_refs()}
+        if not force and output_key not in sources:
+            return False
+        stale = [key for key in self.page_render_cache if os.path.normcase(str(Path(key[0]).resolve())) == output_key]
+        for key in stale:
+            self.page_render_cache.pop(key, None)
+        self.page_size_cache.clear()
+        self.thumbnail_cache.clear()
+        page_refs = self.page_refs_for_pdf_with_password(output_path)
+        if page_refs is None:
+            return False
+        index = self.current_page_index
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self.selected_mark_index = None
+        self.annotation_mode = None
+        self.preview_drag_rect = None
+        self.current_pdf_path = str(Path(output_path))
+        self.rebuild_page_list(page_refs, current_row=min(max(0, index), len(page_refs) - 1))
+        return True
 
     def ask_new_pdf_password(self):
         password, ok = QInputDialog.getText(
@@ -3807,13 +2568,13 @@ class PdfPreviewer(QMainWindow):
         if not output_path:
             return
 
-        try:
-            self.write_ordered_pdf(output_path, self.ordered_page_refs(), password=password)
-            self.current_pdf_path = output_path
-            self.pdf_passwords[str(Path(output_path))] = password
-            self.set_status(f"\uc554\ud638 PDF \uc800\uc7a5\ub428: {output_path}")
-        except Exception as exc:
-            self.show_error("PDF \uc554\ud638 \uc124\uc815 \uc624\ub958", str(exc))
+        if not self.write_pdf_safely(output_path, self.ordered_page_refs(), "PDF \uc554\ud638 \uc124\uc815 \uc624\ub958", password=password):
+            return
+        self.current_pdf_path = output_path
+        self.setWindowTitle(Path(output_path).name)  # title follows 다른 이름으로 저장
+        self.pdf_passwords[str(Path(output_path))] = password
+        self.reload_if_overwritten(output_path)
+        self.set_status(f"\uc554\ud638 PDF \uc800\uc7a5\ub428: {output_path}")
 
     def save_pdf_without_password(self):
         if not self.require_pdf():
@@ -3823,17 +2584,25 @@ class PdfPreviewer(QMainWindow):
         if not output_path:
             return
 
-        try:
-            self.write_ordered_pdf(output_path, self.ordered_page_refs(), password=None)
-            self.current_pdf_path = output_path
-            self.pdf_passwords.pop(str(Path(output_path)), None)
-            self.set_status(f"\uc554\ud638 \ud574\uc81c PDF \uc800\uc7a5\ub428: {output_path}")
-        except Exception as exc:
-            self.show_error("PDF \uc554\ud638 \ud574\uc81c \uc624\ub958", str(exc))
+        if not self.write_pdf_safely(output_path, self.ordered_page_refs(), "PDF \uc554\ud638 \ud574\uc81c \uc624\ub958", password=None):
+            return
+        self.current_pdf_path = output_path
+        self.setWindowTitle(Path(output_path).name)  # title follows 다른 이름으로 저장
+        overwritten = self.reload_if_overwritten(output_path)
+        self.pdf_passwords.pop(str(Path(output_path)), None)
+        if overwritten:
+            for row in range(self.page_list.count()):  # the reloaded file has no password any more
+                item = self.page_list.item(row)
+                ref = item.data(PAGE_ROLE)
+                if ref and ref.password:
+                    item.setData(PAGE_ROLE, PageRef(ref.path, ref.page_index, ref.rotation, ref.marks, ""))
+        self.set_status(f"\uc554\ud638 \ud574\uc81c PDF \uc800\uc7a5\ub428: {output_path}")
 
     def print_pdf(self):
         if not self.require_pdf():
             return
+
+        from PyQt5.QtPrintSupport import QPrintDialog, QPrinter
 
         printer = QPrinter(QPrinter.ScreenResolution)
         printer.setResolution(PRINT_DPI)
@@ -3859,45 +2628,6 @@ class PdfPreviewer(QMainWindow):
                 except OSError:
                     pass
 
-    def print_pdf_file(self, pdf_path, printer):
-        painter = QPainter()
-        if not painter.begin(printer):
-            raise RuntimeError("\ud504\ub9b0\ud130\ub97c \uc2dc\uc791\ud560 \uc218 \uc5c6\uc2b5\ub2c8\ub2e4.")
-
-        try:
-            with pdfium.PdfDocument(pdf_path) as doc:
-                for page_index in range(len(doc)):
-                    if page_index > 0:
-                        if not printer.newPage():
-                            raise RuntimeError("Could not create a new print page.")
-
-                    page = doc[page_index]
-                    page_width, page_height = page.get_size()
-                    page_rect = self.printer_page_rect(printer)
-                    target_scale = min(
-                        page_rect.width() / max(1.0, page_width),
-                        page_rect.height() / max(1.0, page_height),
-                    )
-                    render_scale = min(max(0.1, target_scale), PRINT_MAX_RENDER_SCALE)
-                    bitmap = page.render(scale=render_scale)
-                    image = bitmap.to_pil().convert("RGBA")
-                    width, height = image.size
-                    data = image.tobytes("raw", "RGBA")
-                    qimage = QImage(data, width, height, width * 4, QImage.Format_RGBA8888).copy()
-                    draw_width = page_width * target_scale
-                    draw_height = page_height * target_scale
-                    x = page_rect.x() + max(0, (page_rect.width() - draw_width) / 2)
-                    y = page_rect.y() + max(0, (page_rect.height() - draw_height) / 2)
-                    target_rect = QRectF(float(x), float(y), float(draw_width), float(draw_height))
-                    painter.drawImage(target_rect, qimage)
-        finally:
-            painter.end()
-
-    def printer_page_rect(self, printer):
-        try:
-            return printer.pageRect(QPrinter.DevicePixel)
-        except TypeError:
-            return printer.pageRect()
 
     def save_current(self):
         if not self.require_pdf():
@@ -3908,24 +2638,14 @@ class PdfPreviewer(QMainWindow):
             return
 
         output_path = str(Path(self.current_pdf_path))
-        temp_path = None
-        try:
-            output_dir = Path(output_path).parent
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf", dir=output_dir) as temp_file:
-                temp_path = temp_file.name
-
-            self.write_ordered_pdf(temp_path, self.ordered_page_refs())
-            os.replace(temp_path, output_path)
-            self.undo_stack.clear()
-            self.redo_stack.clear()
-            self.set_status(f"\uc800\uc7a5\ub428: {output_path}")
-        except Exception as exc:
-            if temp_path and Path(temp_path).exists():
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
-            self.show_error("\uc800\uc7a5 \uc624\ub958", str(exc))
+        # An encrypted original stays encrypted with the same password (it used to be saved without one).
+        password = self.pdf_passwords.get(output_path) or None
+        if not self.write_pdf_safely(output_path, self.ordered_page_refs(), "\uc800\uc7a5 \uc624\ub958", password=password):
+            return
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self.reload_if_overwritten(output_path)
+        self.set_status(f"\uc800\uc7a5\ub428: {output_path}")
 
     def merge_pdfs(self):
         paths, _ = QFileDialog.getOpenFileNames(self, "\ubcd1\ud569\ud560 PDF \uc120\ud0dd", "", PDF_FILTER)
@@ -3977,7 +2697,9 @@ class PdfPreviewer(QMainWindow):
 
         ordered_refs = self.ordered_page_refs()
         selected_refs = [ordered_refs[index] for index in selected_pages]
-        self.write_ordered_pdf(output_path, selected_refs)
+        if not self.write_pdf_safely(output_path, selected_refs, "\ud398\uc774\uc9c0 \ucd94\ucd9c \uc624\ub958"):
+            return
+        self.page_render_cache.clear()
         self.load_pdf(output_path)
         self.set_status(f"{len(selected_pages)}\uac1c \ud398\uc774\uc9c0 \ucd94\ucd9c \uc644\ub8cc")
 
@@ -4039,200 +2761,6 @@ class PdfPreviewer(QMainWindow):
             output_path += ".pdf"
         return output_path
 
-    def write_ordered_pdf(self, output_path, page_refs, password=None):
-        writer = PdfWriter()
-        reader_cache = {}
-        output_password = password
-        try:
-            for page_ref in page_refs:
-                reader = reader_cache.get(page_ref.path)
-                if reader is None:
-                    reader = PdfReader(page_ref.path)
-                    if getattr(reader, "is_encrypted", False):
-                        source_password = self.password_for_page_ref(page_ref)
-                        if not source_password or reader.decrypt(source_password) == 0:
-                            raise ValueError(f"PDF \uc554\ud638\uac00 \ud544\uc694\ud569\ub2c8\ub2e4: {Path(page_ref.path).name}")
-                    reader_cache[page_ref.path] = reader
-                writer.add_page(reader.pages[page_ref.page_index])
-                added_page = writer.pages[-1]
-                if page_ref.rotation:
-                    if hasattr(added_page, "rotate"):
-                        added_page.rotate(page_ref.rotation)
-                    else:
-                        added_page.rotate_clockwise(page_ref.rotation)
-                self.add_pdf_mark_annotations(writer, added_page, page_ref)
-            self.write_pdf(writer, output_path, password=output_password)
-        finally:
-            reader_cache.clear()
-
-    def add_pdf_mark_annotations(self, writer, page, page_ref):
-        if not page_ref.marks:
-            return
-
-        width = float(page.mediabox.width)
-        height = float(page.mediabox.height)
-        annots = page.get("/Annots")
-        if annots is None:
-            annots = ArrayObject()
-            page[NameObject("/Annots")] = annots
-        else:
-            annots = annots.get_object()
-
-        for mark in page_ref.marks:
-            if mark.kind == "approval":
-                self.add_approval_table_to_pdf_page(page, mark.rect, self.approval_labels_for_mark(mark))
-                continue
-            if mark.kind == "approval_signed":
-                self.add_approval_table_to_pdf_page(page, mark.rect, normalize_approval_line(mark.data[0]), mark.data[1], mark.data[2])
-                continue
-            if mark.kind == "image_stamp":
-                self.add_png_stamp_to_pdf_page(page, mark, width, height)
-                continue
-
-            left, top, right, bottom = mark.rect
-            x1 = left * width
-            x2 = right * width
-            y1 = height - (bottom * height)
-            y2 = height - (top * height)
-            rect = ArrayObject([FloatObject(x1), FloatObject(y1), FloatObject(x2), FloatObject(y2)])
-
-            if mark.kind == "highlight":
-                annotation = DictionaryObject(
-                    {
-                        NameObject("/Type"): NameObject("/Annot"),
-                        NameObject("/Subtype"): NameObject("/Highlight"),
-                        NameObject("/Rect"): rect,
-                        NameObject("/QuadPoints"): ArrayObject(
-                            [
-                                FloatObject(x1),
-                                FloatObject(y2),
-                                FloatObject(x2),
-                                FloatObject(y2),
-                                FloatObject(x1),
-                                FloatObject(y1),
-                                FloatObject(x2),
-                                FloatObject(y1),
-                            ]
-                        ),
-                        NameObject("/C"): ArrayObject([FloatObject(1), FloatObject(0.92), FloatObject(0)]),
-                        NameObject("/CA"): FloatObject(0.45),
-                        NameObject("/F"): NumberObject(4),
-                    }
-                )
-            else:
-                annotation = DictionaryObject(
-                    {
-                        NameObject("/Type"): NameObject("/Annot"),
-                        NameObject("/Subtype"): NameObject("/Square"),
-                        NameObject("/Rect"): rect,
-                        NameObject("/C"): ArrayObject([FloatObject(1), FloatObject(0), FloatObject(0)]),
-                        NameObject("/BS"): DictionaryObject(
-                            {NameObject("/Type"): NameObject("/Border"), NameObject("/W"): NumberObject(2)}
-                        ),
-                        NameObject("/F"): NumberObject(4),
-                    }
-                )
-
-            annots.append(writer._add_object(annotation))
-
-    def add_png_stamp_to_pdf_page(self, page, mark, width, height):
-        image_path = self.png_path_for_mark(mark)
-        if image_path is None:
-            return
-        # Keep PNG transparency (SMask) so the stamp does not cover the text with a white box.
-        opacity = mark.data[1] / 100 if len(mark.data) > 1 else 1.0
-        self.merge_png_into_pdf_page(page, image_path, mark.rect, opacity)
-
-    @staticmethod
-    def pdf_display_to_user_point(rotation, box_width, box_height, x, y):
-        """Displayed page point (top-left origin, after /Rotate) -> unrotated PDF user space."""
-        if rotation == 90:
-            return y, x
-        if rotation == 180:
-            return box_width - x, y
-        if rotation == 270:
-            return box_width - y, box_height - x
-        return x, box_height - y
-
-    def merge_png_into_pdf_page(self, page, image_path, normalized_rect, opacity=1.0):
-        """Draw a PNG into the page content, fitted (aspect kept) and centered in a rect given in
-        displayed-page coordinates, so it lands where the preview shows it even on rotated pages."""
-        rotation = int(getattr(page, "rotation", 0) or 0) % 360
-        box = page.cropbox
-        box_left, box_bottom = float(box.left), float(box.bottom)
-        box_width, box_height = float(box.width), float(box.height)
-        display_width, display_height = (box_height, box_width) if rotation in (90, 270) else (box_width, box_height)
-
-        temporary_paths = []
-        try:
-            with Image.open(image_path) as source:
-                image = source.convert("RGBA")
-            left, top, right, bottom = normalized_rect
-            target_width = max(1.0, (right - left) * display_width)
-            target_height = max(1.0, (bottom - top) * display_height)
-            ratio = min(target_width / image.width, target_height / image.height)
-            draw_width, draw_height = image.width * ratio, image.height * ratio
-            dx0 = left * display_width + (target_width - draw_width) / 2
-            dy0 = top * display_height + (target_height - draw_height) / 2
-            if rotation:
-                image = image.rotate(rotation, expand=True)
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temporary_file:
-                temporary_paths.append(temporary_file.name)
-            image.save(temporary_paths[-1], "PNG")
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temporary_file:
-                temporary_paths.append(temporary_file.name)
-                temporary_file.write(png_image_to_pdf_page_bytes(temporary_paths[0], opacity))
-
-            stamp_page = PdfReader(temporary_paths[-1]).pages[0]
-            source_width = float(stamp_page.mediabox.width)
-            source_height = float(stamp_page.mediabox.height)
-            corners = [
-                self.pdf_display_to_user_point(rotation, box_width, box_height, dx0, dy0),
-                self.pdf_display_to_user_point(rotation, box_width, box_height, dx0 + draw_width, dy0 + draw_height),
-            ]
-            ux0, ux1 = sorted(point[0] for point in corners)
-            uy0, uy1 = sorted(point[1] for point in corners)
-            transform = Transformation().scale((ux1 - ux0) / source_width, (uy1 - uy0) / source_height).translate(
-                box_left + ux0, box_bottom + uy0
-            )
-            page.merge_transformed_page(stamp_page, transform, expand=False)
-        finally:
-            for temporary_path in temporary_paths:
-                try:
-                    os.remove(temporary_path)
-                except OSError:
-                    pass
-
-    def add_approval_table_to_pdf_page(self, page, normalized_rect, labels, signature_path=None, signature_cell=0):
-        """Approval table goes into the page content as a print-resolution image: it looks identical in
-        every viewer (Edge/Chrome/Acrobat), Korean text needs no PDF font, and it matches the preview."""
-        rotation = int(getattr(page, "rotation", 0) or 0) % 360
-        box = page.cropbox
-        display_width, display_height = (float(box.height), float(box.width)) if rotation in (90, 270) else (float(box.width), float(box.height))
-        left, top, right, bottom = normalized_rect
-        width_pt = max(1.0, (right - left) * display_width)
-        height_pt = max(1.0, (bottom - top) * display_height)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temporary_file:
-            image_path = temporary_file.name
-        try:
-            render_approval_image(image_path, labels, width_pt, height_pt, signature_path, signature_cell)
-            self.merge_png_into_pdf_page(page, image_path, normalized_rect)
-        finally:
-            try:
-                os.remove(image_path)
-            except OSError:
-                pass
-
-    def write_pdf(self, writer, output_path, password=None):
-        output_dir = Path(output_path).parent
-        if output_dir:
-            output_dir.mkdir(parents=True, exist_ok=True)
-
-        if password:
-            writer.encrypt(user_password=password, owner_password=password)
-
-        with open(output_path, "wb") as output_file:
-            writer.write(output_file)
 
     def require_pdf(self):
         if self.page_list.count() > 0:
@@ -4261,14 +2789,6 @@ class PdfPreviewer(QMainWindow):
         )
         self.unregister_assoc_action.setEnabled(registered)
 
-    def register_openwith_from_menu(self):
-        try:
-            register_openwith()
-        except OSError as exc:
-            self.show_error("\ub4f1\ub85d \uc624\ub958", str(exc))
-            return
-        save_association_preferences(disabled=False)
-        QMessageBox.information(self, "\ub4f1\ub85d \uc644\ub8cc", "Koinfra PDF\uac00 PDF '\uc5f0\uacb0 \ud504\ub85c\uadf8\ub7a8' \ubaa9\ub85d\uc5d0 \ub4f1\ub85d\ub418\uc5c8\uc2b5\ub2c8\ub2e4.")
 
     def unregister_openwith_from_menu(self):
         answer = QMessageBox.question(
@@ -4469,11 +2989,10 @@ def main():
     app.setApplicationDisplayName(APP_TITLE)
     app_icon = load_app_icon()
     app.setWindowIcon(app_icon)
-    if not load_association_preferences()["disabled"]:
-        try:
-            register_openwith()  # keeps the command path current (Open with list); never touches UserChoice
-        except OSError:
-            pass
+    try:
+        startup_register()  # keeps the command path current (Open with list) / repairs a stale one; never touches UserChoice
+    except OSError:
+        pass
     window = PdfPreviewer()
     window.setWindowIcon(app_icon)
     startup_paths = [str(Path(arg).resolve()) for arg in sys.argv[1:] if arg.lower().endswith(".pdf") and Path(arg).is_file()]

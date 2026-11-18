@@ -6,7 +6,9 @@ import sys
 from pathlib import Path
 
 root = Path(sys.argv[1]).resolve()
-src = (root / "Koinfra.py").read_text(encoding="utf-8")
+# The app is Koinfra.py plus its kpdf_*.py modules (1.2+); all checks run over the combined source.
+SOURCES = [root / "Koinfra.py"] + sorted(root.glob("kpdf_*.py"))
+src = "\n".join(path.read_text(encoding="utf-8") for path in SOURCES)
 ok = True
 
 
@@ -16,8 +18,9 @@ def report(name, cond, detail=""):
     print(("PASS " if cond else "FAIL ") + name + (f"  [{detail}]" if detail else ""))
 
 
-py_compile.compile(str(root / "Koinfra.py"), doraise=True, cfile=str(Path(sys.argv[2] if len(sys.argv) > 2 else root) / "_compile_check.pyc"))
-report("py_compile", True)
+for path in SOURCES:
+    py_compile.compile(str(path), doraise=True, cfile=str(Path(sys.argv[2] if len(sys.argv) > 2 else root) / f"_compile_check_{path.stem}.pyc"))
+report(f"py_compile ({', '.join(path.name for path in SOURCES)})", True)
 tree = ast.parse(src)
 keys = set(re.findall(r'make_tool_icon\("([a-z_]+)"\)', src))
 keys |= set(re.findall(r'self\.make_action\([^\n]*?,\s*"([a-z_]+)"(?:,|\))', src))

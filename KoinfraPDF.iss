@@ -1,12 +1,12 @@
 ﻿; Koinfra PDF - Inno Setup 6 script
 ; Build: pyinstaller --distpath dist_installer --workpath build_installer KoinfraPDFEdit_installer.spec
-;        "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" KoinfraPDF.iss   ->  installer\KoinfraPDF_Setup_1.0.exe
+;        "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" KoinfraPDF.iss   ->  installer\KoinfraPDF_Setup_1.3.1.exe
 ; Windows 10/11 protect the PDF default (UserChoice + hash): this installer never writes it. It registers
 ; Koinfra PDF as a PDF handler and, on the finish page, starts the Windows default-app flow where the user
 ; clicks '항상' / '기본값 설정' once.
 
 #define AppName "Koinfra PDF"
-#define AppVersion "1.0"
+#define AppVersion "1.3.1"
 #define AppPublisher "Korea Infra Management"
 #define AppExeName "KoinfraPDFEdit.exe"
 #define ProgId "Koinfra.PDFEdit.Document"
@@ -21,7 +21,7 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppPublisher}
-VersionInfoVersion=1.0.0.0
+VersionInfoVersion=1.3.1.0
 VersionInfoDescription={#AppName} 설치
 DefaultDirName={autopf}\Koinfra PDF
 DefaultGroupName=Koinfra PDF
@@ -80,6 +80,8 @@ Root: HKA; Subkey: "Software\Classes\Applications\{#AppExeName}\shell\open"; Val
 Root: HKA; Subkey: "Software\Classes\Applications\{#AppExeName}\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"" ""%1"""
 ; App Paths (Win+R "KoinfraPDFEdit")
 Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\{#AppExeName}"; ValueType: string; ValueName: ""; ValueData: "{app}\{#AppExeName}"; Flags: uninsdeletekey
+; a stale "Path" from an old portable build would point Windows at a folder that no longer exists
+Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\{#AppExeName}"; ValueType: none; ValueName: "Path"; Flags: deletevalue
 ; Capabilities + RegisteredApplications (Settings > Default apps)
 Root: HKA; Subkey: "Software\Koinfra\KoinfraPDFEdit"; Flags: uninsdeletekey
 Root: HKA; Subkey: "{#CapKey}"; ValueType: string; ValueName: "ApplicationName"; ValueData: "{#AppName}"
@@ -102,6 +104,15 @@ Filename: "{app}\{#AppExeName}"; Parameters: "--set-default-pdf"; Description: "
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent unchecked
 
 [Code]
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+begin
+  // refresh the shell's icon cache so 'Open with' / Default apps show the Koinfra icon right away (explorer keeps running)
+  if CurStep = ssPostInstall then
+    Exec(ExpandConstant('{sys}\ie4uinit.exe'), '-show', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usPostUninstall then
