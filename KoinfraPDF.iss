@@ -1,12 +1,12 @@
 ﻿; Koinfra PDF - Inno Setup 6 script
 ; Build: pyinstaller --distpath dist_installer --workpath build_installer KoinfraPDFEdit_installer.spec
-;        "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" KoinfraPDF.iss   ->  installer\KoinfraPDF_Setup_1.4.1.exe
+;        "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" KoinfraPDF.iss   ->  installer\KoinfraPDF_Setup_1.4.2.exe
 ; Windows 10/11 protect the PDF default (UserChoice + hash): this installer never writes it. It registers
 ; Koinfra PDF as a PDF handler and, on the finish page, starts the Windows default-app flow where the user
 ; clicks '항상' / '기본값 설정' once.
 
 #define AppName "Koinfra PDF"
-#define AppVersion "1.4.1"
+#define AppVersion "1.4.2"
 #define AppPublisher "Korea Infra Management"
 #define AppExeName "KoinfraPDFEdit.exe"
 #define ProgId "Koinfra.PDFEdit.Document"
@@ -21,7 +21,7 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppPublisher}
-VersionInfoVersion=1.4.1.0
+VersionInfoVersion=1.4.2.0
 VersionInfoDescription={#AppName} 설치
 DefaultDirName={autopf}\Koinfra PDF
 DefaultGroupName=Koinfra PDF
@@ -29,7 +29,8 @@ DisableProgramGroupPage=yes
 UninstallDisplayIcon={app}\{#AppExeName}
 UninstallDisplayName={#AppName}
 SetupIconFile=icon2.ico
-WizardSmallImageFile=wizard_small_55.bmp,wizard_small_110.bmp
+WizardImageFile=wizard_image_164.bmp,wizard_image_205.bmp,wizard_image_246.bmp,wizard_image_328.bmp
+WizardSmallImageFile=wizard_small_55.bmp,wizard_small_69.bmp,wizard_small_83.bmp,wizard_small_110.bmp
 OutputDir=installer
 OutputBaseFilename=KoinfraPDF_Setup_{#AppVersion}
 Compression=lzma2/max
@@ -108,9 +109,13 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
 begin
-  // refresh the shell's icon cache so 'Open with' / Default apps show the Koinfra icon right away (explorer keeps running)
+  // refresh the shell's icon cache so the new icon shows right away on the exe, shortcuts, PDF files,
+  // 'Open with' and Default apps (explorer keeps running; -show on Windows 10/11, -ClearIconCache on older)
   if CurStep = ssPostInstall then
+  begin
     Exec(ExpandConstant('{sys}\ie4uinit.exe'), '-show', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec(ExpandConstant('{sys}\ie4uinit.exe'), '-ClearIconCache', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

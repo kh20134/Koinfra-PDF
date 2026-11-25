@@ -117,7 +117,7 @@ def render_approval_image(path, labels, width_pt, height_pt, signature_path=None
 
 
 def load_app_icon():
-    # Prefer the multi-size ICO: 16~48px use the simplified "K" monogram, 64px+ the full logo.
+    # Prefer the multi-size ICO (16~256 px frames of the PDF document + pen logo, small sizes pre-sharpened).
     for icon_path in (APP_ICON2_ICO, APP_ICON_ICO):
         if not icon_path.is_file():
             continue
