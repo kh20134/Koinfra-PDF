@@ -10,7 +10,11 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tkinter', 'numpy', 'PIL._avif', 'PIL.AvifImagePlugin', 'PIL._webp', 'PIL.WebPImagePlugin'],
+    # PyMuPDF/openpyxl only *optionally* use pandas/numpy/lxml; without these excludes PyInstaller follows them into
+    # pandas -> scipy/matplotlib/torch... (~650 MB). The converter never needs them.
+    excludes=['tkinter', 'numpy', 'PIL._avif', 'PIL.AvifImagePlugin', 'PIL._webp', 'PIL.WebPImagePlugin',
+              'pandas', 'scipy', 'matplotlib', 'sympy', 'torch', 'torchvision', 'transformers', 'tensorflow', 'sqlalchemy',
+              'jinja2', 'pydantic', 'fsspec', 'IPython', 'gi', 'lxml', 'pytest'],
     noarchive=False,
     optimize=0,
 )

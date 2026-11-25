@@ -531,6 +531,7 @@ class PdfPreviewer(PdfExportMixin, QMainWindow):
         self.stamp_menu = None
         self.approval_menu = None
         self.toolbar_context_buttons = []
+        self.convert_dialog = None
         self.default_app_watch = None
         self.default_app_guide = None
         self.open_with_attempt = None
@@ -675,7 +676,7 @@ class PdfPreviewer(PdfExportMixin, QMainWindow):
                 margin: 4px 2px 4px 2px;
             }
             #toolbarGroup QToolButton {
-                min-width: 36px;
+                min-width: 32px;
                 padding: 2px 3px;
             }
             QSpinBox#pageSpin {
@@ -813,6 +814,12 @@ class PdfPreviewer(PdfExportMixin, QMainWindow):
         mark_menu.addSeparator()
         mark_menu.addAction(self.make_action("\uc8fc\uc11d \ubaa8\ub4dc \ub044\uae30", self.disable_annotation_mode))
 
+        convert_menu = menu_bar.addMenu("변환")
+        convert_menu.addAction(self.make_action("엑셀로 변환… (.xlsx)", self.convert_to_excel, "conv_excel"))
+        convert_menu.addAction(self.make_action("한글로 변환… (.hwpx/.hwp)", self.convert_to_hwp, "conv_hwp"))
+        convert_menu.addAction(self.make_action("이미지로 변환… (PNG/JPG)", self.convert_to_image, "conv_image"))
+        self.convert_menu = convert_menu
+
         edit_menu.addAction(self.make_action("\uc798\ub77c\ub0b4\uae30", self.cut_selected_pages, "cut", shortcut=QKeySequence.Cut))
         edit_menu.addAction(self.make_action("\ubcf5\uc0ac\ud558\uae30", self.copy_selected_pages, "copy", shortcut=QKeySequence.Copy))
         edit_menu.addAction(self.make_action("\ubd99\uc5ec\ub123\uae30", self.paste_pages_after_current, "paste", shortcut=QKeySequence.Paste))
@@ -870,6 +877,9 @@ class PdfPreviewer(PdfExportMixin, QMainWindow):
             ("\uc11c\uba85", [
                 ("\ub3c4\uc7a5", self.insert_default_stamp, "stamp"),
                 ("\uacb0\uc7ac", self.insert_signed_approval, "signature"),
+            ]),
+            ("변환", [
+                ("변환", self.open_convert_dialog, "convert"),
             ]),
             ("\ubcf4\uae30", [
                 ("\uc6b0\ud68c\uc804", self.rotate_selected_pages_right, "rotate_right"),
@@ -2803,6 +2813,29 @@ class PdfPreviewer(PdfExportMixin, QMainWindow):
             return True
         self.show_error("PDF \uc5c6\uc74c", "\uba3c\uc800 PDF \ud30c\uc77c\uc744 \uc5f4\uc5b4\uc8fc\uc138\uc694.")
         return False
+
+    def convert_to_excel(self):
+        self.open_convert_dialog("excel")
+
+    def convert_to_hwp(self):
+        self.open_convert_dialog("hwp")
+
+    def convert_to_image(self):
+        self.open_convert_dialog("image")
+
+    def open_convert_dialog(self, kind=None):
+        """'변환' window (엑셀/한글/이미지) for the open document as shown (order, rotation, stamps) or another PDF.
+        The toolbar button opens it on the last used format."""
+        from kpdf_convert_dialog import ConvertDialog, load_convert_preferences  # loaded on first use: start-up stays fast
+
+        dialog = ConvertDialog(self, kind or load_convert_preferences().get("kind", "excel"))
+        self.convert_dialog = dialog
+        try:
+            dialog.exec_()
+        finally:
+            dialog.close()
+            self.convert_dialog = None
+        return dialog
 
     def show_file_info(self):
         if not self.require_pdf():

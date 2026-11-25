@@ -8,11 +8,12 @@ Windows용 PDF 편집기(PyQt5)입니다. 여러 PDF를 합치고 페이지를 �
 - **주석:** 사각형과 형광펜
 - **도장:** 도장 이미지를 넣고, 오른쪽 클릭으로 설정과 저장
 - **결재:** 결재란(담당/검토/승인 등)과 내 서명을 넣고, 오른쪽 클릭으로 설정과 저장
+- **변환:** 열린 PDF(또는 다른 PDF)를 엑셀(.xlsx), 한글(.hwpx, 한컴 한글이 있으면 .hwp), 이미지(PNG/JPG)로 저장. 페이지 범위, 저장 위치, 이미지 해상도(DPI) 선택
 - **인쇄**와 확대·축소
 - **PDF 기본 앱 설정:** Windows 앱 선택 창 또는 설정 화면으로 연결하고, 설정이 끝나면 자동으로 확인
 
 ## 설치 (일반 사용자)
-1. [Releases](../../releases)에서 `KoinfraPDF_Setup_1.3.2.exe`를 받아 실행합니다.
+1. [Releases](../../releases)에서 `KoinfraPDF_Setup_1.4.exe`를 받아 실행합니다.
 2. 마지막 화면의 **"PDF 기본 앱으로 설정"**을 체크한 채 마칩니다.
 3. 뜨는 창에서 **Koinfra PDF 선택 → '항상'**을 클릭합니다.
    - 설정 화면이 열리면 **.pdf → Koinfra PDF → '기본값 설정'**을 클릭합니다.
@@ -33,7 +34,7 @@ pip install pyinstaller
 pyinstaller --noconfirm --distpath dist_installer --workpath build_installer KoinfraPDFEdit_installer.spec
 
 # 2) 설치 파일 (Inno Setup 6)
-"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" KoinfraPDF.iss   # -> installer\KoinfraPDF_Setup_1.3.2.exe
+"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" KoinfraPDF.iss   # -> installer\KoinfraPDF_Setup_1.4.exe
 ```
 `KoinfraPDFEdit.spec`은 실행 파일 하나로 만드는(onefile) 빌드용입니다.
 
@@ -47,9 +48,22 @@ python test/full_audit_test.py . out_audit   # 전체 기능 점검(테스트 PD
 python test/registration_test.py . out_reg   # 연결 등록 경로(설치본 우선, 빌드·임시 폴더 차단, 고장난 연결 복구)
 python test/perf_cache_test.py . out_perf   # 문서·페이지 캐시, 썸네일 해상도, 렌더 캐시 보호
 python test/thumb_grid_test.py . out_grid   # 썸네일 칸 너비별 1/2/3열 배치, 가운데 정렬, 선택·드래그·스크롤
+python test/convert_test.py . out_conv   # 변환: 엑셀 표·병합 셀, 한글(.hwpx 구조, 한컴 한글이 있으면 열기·.hwp 저장), 이미지 DPI, 스캔 PDF, 변환 창
 ```
 
+## 변환 기능 안내
+- **엑셀:** 표마다 시트 하나(`p1_표1`…)로 넣고 병합 셀을 유지합니다. 표 밖 글자나 표가 없는 페이지는 `p1_텍스트`(또는 `p2`) 시트에 줄 단위로 넣고, 넓게 띄어진 칸은 다른 셀로 나눕니다. 1,234 같은 숫자는 숫자로, 007 같은 코드는 글자로 둡니다.
+- **한글:** `.hwpx`를 직접 만들어서 한글 프로그램이 없어도 됩니다(한글 2014 이상에서 열림). 글자는 문단, 표는 한글 표(테두리, 병합 셀, 머리글 행)로 옮기고, PDF 한 쪽이 한글 한 쪽에서 시작합니다. `.hwp`는 PC에 한컴 한글이 있을 때 한글로 저장합니다.
+- **이미지:** 페이지마다 파일 하나(`이름_p001.png`)를 72~600 DPI로 저장합니다.
+- **한계:** 글자와 표 중심이라 그림·도형·글꼴·정확한 위치는 옮기지 않습니다. 다단, 선 없는 표, 복잡한 서식은 줄 단위 글자로 들어갈 수 있습니다. 스캔 PDF(글자 정보 없음)는 엑셀·한글로 옮길 내용이 없어서 이미지 변환만 됩니다(OCR 미포함).
+
 ## 변경 사항
+### 1.4
+- 새 **변환** 탭(메뉴·툴바): 열린 PDF를 엑셀(.xlsx), 한글(.hwpx / .hwp), 이미지(PNG·JPG)로 저장. 화면에 보이는 그대로(합친 파일, 페이지 순서, 회전, 도장 포함) 변환하고, 다른 PDF 파일을 골라도 됨
+- 페이지 범위(전체, 현재 페이지, 1-3,5), 저장 위치, 이미지 DPI 선택, 진행 표시와 취소, 끝나면 폴더 열기. 같은 이름 파일이 있으면 덮어쓰지 않고 `이름 (2)`로 저장
+- 스캔 PDF(글자 정보 없음)는 미리 알려 주고 이미지 변환을 안내
+- 기존 기능과 화면은 그대로
+
 ### 1.3.2
 - 더 빨라짐(80쪽 PDF 기준): 열기 약 215 → 145ms, 20쪽 넘기기 약 810 → 530ms, 확대/축소 12번 약 270 → 145ms, 썸네일 스크롤 약 1.9 → 1.5초. 열어 둔 문서와 최근 페이지를 다시 쓰고, 파일은 메모리에서 읽어 잠그지 않음(탐색기에서 이름 바꾸기·덮어쓰기 가능, 바뀌면 자동으로 다시 읽음)
 - 썸네일이 보이는 크기 그대로 그려져 선명함(넓은 칸에서 흐리던 문제 수정). 썸네일이 미리보기 캐시를 차지하지 않음

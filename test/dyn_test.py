@@ -111,6 +111,7 @@ def main():
         ("보안", ["암호", "해제"]),
         ("주석", ["사각형", "형광펜"]),
         ("서명", ["도장", "결재"]),
+        ("변환", ["변환"]),
         ("보기", ["우회전", "좌회전", "이전", "다음", "축소", "확대"]),
     ]
     actual_groups = [(name, [a.text() for a in acts]) for name, acts, _ in window.toolbar_groups]

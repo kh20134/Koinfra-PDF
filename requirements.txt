@@ -2,3 +2,6 @@ PyQt5>=5.15
 pypdfium2>=5.0
 pypdf>=6.0
 Pillow>=10.0
+PyMuPDF>=1.24
+openpyxl>=3.1
+pywin32>=306; sys_platform == "win32"
