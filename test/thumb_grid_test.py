@@ -187,4 +187,6 @@ finally:
     passed = sum(1 for _, ok in RESULTS if ok)
     print(f"\nRESULT {passed}/{len(RESULTS)} passed", flush=True)
     (OUT / "thumb_grid_results.json").write_text(json.dumps(RESULTS, ensure_ascii=False, indent=1), encoding="utf-8")
+    import shutil
+    shutil.rmtree(WORK, ignore_errors=True)  # the temp test PDF / APPDATA (was left behind in %TEMP%)
     os._exit(0 if passed == len(RESULTS) else 1)

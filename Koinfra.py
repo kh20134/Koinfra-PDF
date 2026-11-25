@@ -20,7 +20,6 @@ try:
     for _required in ("PIL", "pypdf"):  # imported lazily (on save/print); only checked for presence here
         if importlib.util.find_spec(_required) is None:
             raise ImportError(f"No module named '{_required}'")
-    import pypdfium2 as pdfium
     from PyQt5.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer
     from PyQt5.QtGui import (
         QColor, QDragEnterEvent, QDropEvent, QFont, QIcon, QImage, QKeySequence, QPainter, QPen,
@@ -35,7 +34,7 @@ try:
     from kpdf_widgets import PageThumbnailList, PdfCanvasLabel, PdfScrollArea, SignatureDialog, StampSettingsDialog
     from kpdf_graphics import load_app_icon, make_page_icon, make_tool_icon, paint_approval_table
     from kpdf_export import PdfExportMixin
-    from kpdf_core import RENDER_CACHE_MAX_BYTES, RENDER_CACHE_MAX_ITEMS, TOOL_ICON_DIR, pdf_page_sizes
+    from kpdf_core import PDF_SOURCES, RENDER_CACHE_MAX_BYTES, RENDER_CACHE_MAX_ITEMS, TOOL_ICON_DIR, pdf_page_sizes
     from kpdf_graphics import approval_geometry, approval_signature_cell_rect
 except ImportError as exc:
     print(
@@ -239,14 +238,34 @@ def startup_registration_allowed():
     return not association_target_warning()
 
 
+def registration_current(base=None, hive=None):
+    """True when every value register_openwith() would write is already there (nothing to do at start)."""
+    paths = _assoc_paths(base)
+    command = build_openwith_command()
+    icon_ref = app_icon_reference()
+    expected = (
+        (paths["app"] + r"\shell\open\command", "", command),
+        (paths["app"] + r"\DefaultIcon", "", icon_ref),
+        (paths["progid"] + r"\shell\open\command", "", command),
+        (paths["progid"] + r"\DefaultIcon", "", pdf_document_icon_reference()),
+        (paths["capabilities"], "ApplicationIcon", icon_ref),
+        (paths["capabilities"] + r"\FileAssociations", ".pdf", APP_PROG_ID),
+        (paths["registered"], APP_REGISTERED_NAME, paths["capabilities"]),
+        (paths["openwith"], APP_PROG_ID, ""),
+    )
+    return all(_reg_get(key, name, hive) == value for key, name, value in expected)
+
+
 def startup_register(base=None, hive=None):
     """Called at start. Keeps the registration current, and repairs a stale one even when auto-registration was turned off.
-    Returns 'registered', 'repaired' or ''."""
+    Returns 'registered', 'repaired', 'current' (already right: nothing written, no shell refresh) or ''."""
     if not startup_registration_allowed():
         return ""
     broken = registration_broken(base, hive)
     if load_association_preferences()["disabled"] and not broken:
         return ""
+    if not broken and registration_current(base, hive):
+        return "current"
     register_openwith(base, hive)
     return "repaired" if broken else "registered"
 
@@ -491,7 +510,7 @@ class PdfPreviewer(PdfExportMixin, QMainWindow):
         self.zoom_factor = 1.0
         self.preview_refresh_pending = False
         self.thumbnail_refresh_pending = False
-        self.thumbnail_scale = 0.16
+        self.thumbnail_scale = 0.16  # legacy; thumbnails are rendered at their shown size (render_thumbnail_pixmap)
         self.thumbnail_cache = {}
         self.placeholder_icon_cache = {}
         self.page_size_cache = {}
@@ -1019,6 +1038,10 @@ class PdfPreviewer(PdfExportMixin, QMainWindow):
         if page_refs is None:
             return
 
+        keep = os.path.normcase(os.path.abspath(str(path)))
+        for other in {ref.path for ref in self.ordered_page_refs()}:
+            if os.path.normcase(os.path.abspath(other)) != keep:
+                PDF_SOURCES.invalidate(other)
         self.current_pdf_path = path
         self.undo_stack.clear()
         self.redo_stack.clear()
@@ -1662,8 +1685,7 @@ class PdfPreviewer(PdfExportMixin, QMainWindow):
         cache_key = (page_ref.path, page_ref.page_index, page_ref.rotation, round(scale, 3))
         cached_pixmap = self.page_render_cache.get(cache_key)
         if cached_pixmap is None:
-            with pdfium.PdfDocument(page_ref.path, password=self.password_for_page_ref(page_ref) or None) as doc:
-                page = doc[page_ref.page_index]
+            with PDF_SOURCES.page(page_ref.path, page_ref.page_index, self.password_for_page_ref(page_ref)) as page:
                 qimage = pdfium_page_to_qimage(page, scale, page_ref.rotation)
 
             cached_pixmap = QPixmap.fromImage(qimage)
@@ -1672,6 +1694,9 @@ class PdfPreviewer(PdfExportMixin, QMainWindow):
         else:
             self.page_render_cache[cache_key] = self.page_render_cache.pop(cache_key)  # most recently used
 
+        if not page_ref.marks:
+            # shallow Qt copy (no pixel copy): painting on it later (drag frame) detaches, the cached page stays clean
+            return QPixmap(cached_pixmap)
         pixmap = cached_pixmap.copy()
         self.draw_page_marks(pixmap, page_ref.marks, selected_mark_index=selected_mark_index)
         return pixmap
@@ -1774,6 +1799,16 @@ class PdfPreviewer(PdfExportMixin, QMainWindow):
         left, top, right, bottom = rect
         return QRectF(left * size.width(), top * size.height(), (right - left) * size.width(), (bottom - top) * size.height())
 
+    def render_thumbnail_pixmap(self, page_ref):
+        """The page rendered straight at thumbnail size (not cached here: render_thumbnail caches the finished icon)."""
+        width, height = self.page_display_size(page_ref)
+        scale = min(self.thumbnail_item_width / max(1.0, width), self.thumbnail_item_height / max(1.0, height))
+        scale = max(0.02, min(2.0, scale))
+        with PDF_SOURCES.page(page_ref.path, page_ref.page_index, self.password_for_page_ref(page_ref)) as page:
+            pixmap = QPixmap.fromImage(pdfium_page_to_qimage(page, scale, page_ref.rotation))
+        self.draw_page_marks(pixmap, page_ref.marks)
+        return pixmap
+
     def render_thumbnail(self, page_ref):
         cache_key = (
             page_ref.path,
@@ -1787,13 +1822,14 @@ class PdfPreviewer(PdfExportMixin, QMainWindow):
         if cached_icon is not None:
             return cached_icon
 
-        pixmap = self.render_page_pixmap(page_ref, self.thumbnail_scale)
-        thumbnail = pixmap.scaled(
-            self.thumbnail_item_width,
-            self.thumbnail_item_height,
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation,
-        )
+        thumbnail = self.render_thumbnail_pixmap(page_ref)
+        if thumbnail.width() > self.thumbnail_item_width or thumbnail.height() > self.thumbnail_item_height:
+            thumbnail = thumbnail.scaled(
+                self.thumbnail_item_width,
+                self.thumbnail_item_height,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
         canvas = QPixmap(self.thumbnail_canvas_width, self.thumbnail_canvas_height)
         canvas.fill(Qt.transparent)
 
@@ -2512,6 +2548,7 @@ class PdfPreviewer(PdfExportMixin, QMainWindow):
         sources = {os.path.normcase(str(Path(ref.path).resolve())) for ref in self.ordered_page_refs()}
         if not force and output_key not in sources:
             return False
+        PDF_SOURCES.invalidate(output_path)
         stale = [key for key in self.page_render_cache if os.path.normcase(str(Path(key[0]).resolve())) == output_key]
         for key in stale:
             self.page_render_cache.pop(key, None)
@@ -2746,8 +2783,7 @@ class PdfPreviewer(PdfExportMixin, QMainWindow):
         page_refs = self.page_refs_for_pdf_with_password(path)
         if page_refs is None:
             return items
-        for page_ref in page_refs:
-            items.append(self.create_item_for_page_ref(page_ref))
+        items.extend(self.create_item_for_page_ref(page_ref) for page_ref in page_refs)
         return items
 
     def ask_save_path(self, title):

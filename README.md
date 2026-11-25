@@ -12,7 +12,7 @@ Windows용 PDF 편집기(PyQt5)입니다. 여러 PDF를 합치고 페이지를 �
 - **PDF 기본 앱 설정:** Windows 앱 선택 창 또는 설정 화면으로 연결하고, 설정이 끝나면 자동으로 확인
 
 ## 설치 (일반 사용자)
-1. [Releases](../../releases)에서 `KoinfraPDF_Setup_1.3.1.exe`를 받아 실행합니다.
+1. [Releases](../../releases)에서 `KoinfraPDF_Setup_1.3.2.exe`를 받아 실행합니다.
 2. 마지막 화면의 **"PDF 기본 앱으로 설정"**을 체크한 채 마칩니다.
 3. 뜨는 창에서 **Koinfra PDF 선택 → '항상'**을 클릭합니다.
    - 설정 화면이 열리면 **.pdf → Koinfra PDF → '기본값 설정'**을 클릭합니다.
@@ -33,7 +33,7 @@ pip install pyinstaller
 pyinstaller --noconfirm --distpath dist_installer --workpath build_installer KoinfraPDFEdit_installer.spec
 
 # 2) 설치 파일 (Inno Setup 6)
-"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" KoinfraPDF.iss   # -> installer\KoinfraPDF_Setup_1.3.1.exe
+"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" KoinfraPDF.iss   # -> installer\KoinfraPDF_Setup_1.3.2.exe
 ```
 `KoinfraPDFEdit.spec`은 실행 파일 하나로 만드는(onefile) 빌드용입니다.
 
@@ -45,10 +45,18 @@ python test/approval_test.py . out_appr t
 python test/assoc_test.py . out_assoc   # 임시 레지스트리 키(HKCU\Software\KoinfraTest)만 사용
 python test/full_audit_test.py . out_audit   # 전체 기능 점검(테스트 PDF 자동 생성)
 python test/registration_test.py . out_reg   # 연결 등록 경로(설치본 우선, 빌드·임시 폴더 차단, 고장난 연결 복구)
+python test/perf_cache_test.py . out_perf   # 문서·페이지 캐시, 썸네일 해상도, 렌더 캐시 보호
 python test/thumb_grid_test.py . out_grid   # 썸네일 칸 너비별 1/2/3열 배치, 가운데 정렬, 선택·드래그·스크롤
 ```
 
 ## 변경 사항
+### 1.3.2
+- 더 빨라짐(80쪽 PDF 기준): 열기 약 215 → 145ms, 20쪽 넘기기 약 810 → 530ms, 확대/축소 12번 약 270 → 145ms, 썸네일 스크롤 약 1.9 → 1.5초. 열어 둔 문서와 최근 페이지를 다시 쓰고, 파일은 메모리에서 읽어 잠그지 않음(탐색기에서 이름 바꾸기·덮어쓰기 가능, 바뀌면 자동으로 다시 읽음)
+- 썸네일이 보이는 크기 그대로 그려져 선명함(넓은 칸에서 흐리던 문제 수정). 썸네일이 미리보기 캐시를 차지하지 않음
+- 최대 메모리 사용 감소(약 142 → 130MB), 시작할 때 연결 등록이 이미 맞으면 레지스트리를 다시 쓰지 않고 탐색기 새로 고침도 하지 않음
+- 설치 파일 크기 감소: 쓰지 않는 OpenGL·QtQuick·WebGL 구성요소와 AVIF/WebP 코덱 제외
+- 쓰지 않는 코드 정리
+
 ### 1.3.1
 - '연결 프로그램'으로 열면 아무것도 안 뜨고 아이콘이 기본 아이콘으로 보이던 문제 수정: 빌드·임시 폴더에서 실행한 사본이 PDF 연결을 자기 위치로 바꾸던 것을 막음(설치본이 있으면 항상 설치본으로 등록). 시작할 때 연결이 없는 파일을 가리키면 설치본으로 자동 복구
 - 설치 시 아이콘 캐시를 새로 고쳐 '연결 프로그램'·기본 앱 화면에 Koinfra PDF 아이콘이 바로 보임, 예전 빌드가 남긴 App Paths 'Path' 값 정리

@@ -93,7 +93,12 @@ def main():
               and not K.registration_broken(), result)
         check("healthy + turned off -> left alone", K.startup_register() == "")
         K.save_association_preferences(disabled=False)
-        check("healthy + on -> refreshed", K.startup_register() == "registered")
+        notified = []
+        K.notify_association_changed = lambda: notified.append(1)
+        check("healthy + on -> nothing rewritten, no shell refresh", K.startup_register() == "current" and not notified)
+        K._reg_set(p["progid"] + r"\shell\open\command", "", f'"{installed}" "%1" --old')
+        check("outdated command (program exists) -> rewritten", K.startup_register() == "registered" and g(p["progid"] + r"\shell\open\command", "") == f'"{installed}" "%1"' and notified)
+        K.notify_association_changed = lambda: None
         K._reg_set(p["app"] + r"\DefaultIcon", "", str(WORK / "nope.ico"))
         check("missing icon file also counts as broken", K.registration_broken())
         K.startup_register()

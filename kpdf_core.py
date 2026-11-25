@@ -3,6 +3,8 @@ import os
 import sys
 import json
 import zlib
+from collections import OrderedDict
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import pypdfium2 as pdfium
@@ -55,9 +57,6 @@ APP_USER_MODEL_ID = "Koinfra.PDFEdit.KoinfraPDFEdit"
 APP_PROG_ID = "Koinfra.PDFEdit.Document"
 
 
-APP_DEFAULTS_CAPABILITY_PATH = r"Software\Koinfra\KoinfraPDFEdit\Capabilities"
-
-
 PRINT_DPI = 200
 
 
@@ -65,8 +64,9 @@ PRINT_MAX_RENDER_SCALE = 3.0
 
 
 # Rendered preview pages kept for scrolling/zoom back (least recently used dropped first).
-RENDER_CACHE_MAX_ITEMS = 24
-RENDER_CACHE_MAX_BYTES = 192 * 1024 * 1024
+# Thumbnails no longer go through this cache (they used to fill most of its slots), so fewer slots hold the same pages.
+RENDER_CACHE_MAX_ITEMS = 12
+RENDER_CACHE_MAX_BYTES = 128 * 1024 * 1024
 
 
 DEFAULT_APPROVAL_LINE = ("\ub2f4\ub2f9", "\uac80\ud1a0", "\uc2b9\uc778")
@@ -157,9 +157,6 @@ STAMP_POSITIONS = (
 DEFAULT_STAMP_SETTINGS = {"image": "", "width_percent": 16, "opacity_percent": 100, "position": "bottom_right"}
 
 
-DEFAULT_SIGNATURE_SETTINGS = {"image": "", "cell": 0}
-
-
 def _clamped_int(value, default, low, high):
     try:
         number = int(value)
@@ -246,14 +243,135 @@ def parse_page_ranges(text, total_pages):
     return pages
 
 
+class PdfSourceCache:
+    """Recently used PDF documents and pages, kept open for the next render.
+
+    Re-opening the file and re-parsing the page for every preview/thumbnail render cost about as much as the
+    rendering itself. Documents are read into memory, so the file is never kept open (it can still be renamed,
+    replaced or deleted in Explorer), and a file that changed on disk (size or modified time) is read again.
+    pdfium keeps what it parsed for the whole life of a document, so a document is re-created from the same
+    bytes after a number of page loads (memory stays flat while paging through a long PDF).
+    Very large files are not kept; they are opened per use as before."""
+
+    def __init__(self, max_documents=4, max_pages=3, max_file_bytes=96 * 1024 * 1024, max_total_bytes=256 * 1024 * 1024,
+                 recycle_after_pages=12):
+        self.max_documents = max_documents
+        self.max_pages = max_pages
+        self.max_file_bytes = max_file_bytes
+        self.max_total_bytes = max_total_bytes
+        self.recycle_after_pages = recycle_after_pages
+        self._documents = OrderedDict()  # (path, password) -> {"signature", "data", "doc", "loads"}
+        self._pages = OrderedDict()  # (path, password, page index) -> (PdfDocument, PdfPage)
+
+    @staticmethod
+    def _signature(path):
+        stat = os.stat(path)
+        return stat.st_mtime_ns, stat.st_size
+
+    @staticmethod
+    def _close(obj):
+        try:
+            obj.close()
+        except Exception:
+            pass
+
+    def _close_pages(self, key):
+        for page_key in [k for k in self._pages if k[:2] == key]:
+            self._close(self._pages.pop(page_key)[1])
+
+    def _drop(self, key):
+        self._close_pages(key)
+        entry = self._documents.pop(key, None)
+        if entry is not None:
+            self._close(entry["doc"])
+
+    def _cached_document(self, path, password):
+        key = (path, password)
+        signature = self._signature(path)
+        entry = self._documents.get(key)
+        if entry is not None and entry["signature"] != signature:
+            self._drop(key)
+            entry = None
+        if entry is not None:
+            self._documents.move_to_end(key)
+            if entry["loads"] >= self.recycle_after_pages:  # fresh document from the same bytes: frees pdfium's caches
+                self._close_pages(key)
+                self._close(entry["doc"])
+                entry["doc"] = pdfium.PdfDocument(entry["data"], password=password or None)
+                entry["loads"] = 0
+            return entry
+        if signature[1] > self.max_file_bytes:
+            return None
+        with open(path, "rb") as source:
+            data = source.read()
+        entry = {"signature": signature, "data": data, "doc": pdfium.PdfDocument(data, password=password or None), "loads": 0}
+        self._documents[key] = entry
+        while len(self._documents) > 1 and (
+            len(self._documents) > self.max_documents or sum(len(e["data"]) for e in self._documents.values()) > self.max_total_bytes
+        ):
+            self._drop(next(iter(self._documents)))
+        return entry
+
+    @contextmanager
+    def document(self, path, password=""):
+        path, password = str(path), password or ""
+        entry = self._cached_document(path, password)
+        if entry is not None:
+            yield entry["doc"]
+            return
+        with pdfium.PdfDocument(path, password=password or None) as document:
+            yield document
+
+    @contextmanager
+    def page(self, path, page_index, password=""):
+        path, password = str(path), password or ""
+        entry = self._cached_document(path, password)
+        if entry is None:
+            with pdfium.PdfDocument(path, password=password or None) as uncached:
+                page = uncached[page_index]
+                try:
+                    yield page
+                finally:
+                    self._close(page)
+            return
+        document = entry["doc"]
+        key = (path, password, page_index)
+        cached = self._pages.get(key)
+        if cached is not None and cached[0] is document:
+            self._pages.move_to_end(key)
+            yield cached[1]
+            return
+        if cached is not None:
+            self._close(self._pages.pop(key)[1])
+        page = document[page_index]
+        entry["loads"] += 1
+        self._pages[key] = (document, page)
+        while len(self._pages) > max(1, self.max_pages):  # never the page about to be used
+            self._close(self._pages.pop(next(iter(self._pages)))[1])
+        yield page
+
+    def invalidate(self, path=None):
+        """Forget one file (any password) or everything."""
+        target = None if path is None else os.path.normcase(os.path.abspath(str(path)))
+        for key in list(self._documents):
+            if target is None or os.path.normcase(os.path.abspath(key[0])) == target:
+                self._drop(key)
+
+    def stats(self):
+        return {"documents": len(self._documents), "pages": len(self._pages), "bytes": sum(len(e["data"]) for e in self._documents.values())}
+
+
+PDF_SOURCES = PdfSourceCache()
+
+
 def pdf_page_sizes(path, password=""):
     """(width, height) in points of every page, read from the page tree without loading page content."""
-    with pdfium.PdfDocument(path, password=password or None) as doc:
+    with PDF_SOURCES.document(path, password) as doc:
         return [tuple(doc.get_page_size(index)) for index in range(len(doc))]
 
 
 def page_refs_for_pdf(path, password=""):
-    with pdfium.PdfDocument(path, password=password or None) as doc:
+    with PDF_SOURCES.document(path, password) as doc:
         return [PageRef(path, index, password=password) for index in range(len(doc))]
 
 

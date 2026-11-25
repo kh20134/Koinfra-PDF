@@ -357,7 +357,6 @@ class PdfCanvasLabel(QLabel):
         self.edit_original_rect = None
         self.edit_snapshot = None
         self.pan_active = False
-        self.pan_last_pos = None
         self.pan_last_global_pos = None
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -386,7 +385,6 @@ class PdfCanvasLabel(QLabel):
             if self.owner.can_pan_preview():
                 self.setFocus()
                 self.pan_active = True
-                self.pan_last_pos = event.pos()
                 self.pan_last_global_pos = event.globalPos()
                 self.setCursor(Qt.ClosedHandCursor)
                 event.accept()
@@ -415,7 +413,6 @@ class PdfCanvasLabel(QLabel):
         if self.pan_active and self.pan_last_global_pos is not None:
             delta = event.globalPos() - self.pan_last_global_pos
             self.owner.pan_preview_by(delta)
-            self.pan_last_pos = event.pos()
             self.pan_last_global_pos = event.globalPos()
             event.accept()
             return
@@ -449,7 +446,6 @@ class PdfCanvasLabel(QLabel):
             return
         if event.button() == Qt.LeftButton and self.pan_active:
             self.pan_active = False
-            self.pan_last_pos = None
             self.pan_last_global_pos = None
             self.owner.update_preview_cursor()
             event.accept()
