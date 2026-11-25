@@ -4,6 +4,7 @@ Windows용 PDF 편집기(PyQt5)입니다. 여러 PDF를 합치고 페이지를 �
 
 ## 주요 기능
 - **페이지:** 병합, 추출, 삽입, 삭제, 회전, 드래그로 순서 변경, 썸네일 미리보기(칸을 넓히면 여러 열)
+- **내보내기:** 썸네일을 클릭·Ctrl+클릭·Shift+클릭(Ctrl+A)으로 고른 뒤 오른쪽 클릭 → 내보내기 → PDF / 엑셀 / 한글 / 이미지
 - **보안:** PDF 암호 설정과 해제
 - **주석:** 사각형과 형광펜
 - **도장:** 도장 이미지를 넣고, 오른쪽 클릭으로 설정과 저장
@@ -13,7 +14,7 @@ Windows용 PDF 편집기(PyQt5)입니다. 여러 PDF를 합치고 페이지를 �
 - **PDF 기본 앱 설정:** Windows 앱 선택 창 또는 설정 화면으로 연결하고, 설정이 끝나면 자동으로 확인
 
 ## 설치 (일반 사용자)
-1. [Releases](../../releases)에서 `KoinfraPDF_Setup_1.4.exe`를 받아 실행합니다.
+1. [Releases](../../releases)에서 `KoinfraPDF_Setup_1.4.1.exe`를 받아 실행합니다.
 2. 마지막 화면의 **"PDF 기본 앱으로 설정"**을 체크한 채 마칩니다.
 3. 뜨는 창에서 **Koinfra PDF 선택 → '항상'**을 클릭합니다.
    - 설정 화면이 열리면 **.pdf → Koinfra PDF → '기본값 설정'**을 클릭합니다.
@@ -34,7 +35,7 @@ pip install pyinstaller
 pyinstaller --noconfirm --distpath dist_installer --workpath build_installer KoinfraPDFEdit_installer.spec
 
 # 2) 설치 파일 (Inno Setup 6)
-"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" KoinfraPDF.iss   # -> installer\KoinfraPDF_Setup_1.4.exe
+"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" KoinfraPDF.iss   # -> installer\KoinfraPDF_Setup_1.4.1.exe
 ```
 `KoinfraPDFEdit.spec`은 실행 파일 하나로 만드는(onefile) 빌드용입니다.
 
@@ -48,6 +49,7 @@ python test/full_audit_test.py . out_audit   # 전체 기능 점검(테스트 PD
 python test/registration_test.py . out_reg   # 연결 등록 경로(설치본 우선, 빌드·임시 폴더 차단, 고장난 연결 복구)
 python test/perf_cache_test.py . out_perf   # 문서·페이지 캐시, 썸네일 해상도, 렌더 캐시 보호
 python test/thumb_grid_test.py . out_grid   # 썸네일 칸 너비별 1/2/3열 배치, 가운데 정렬, 선택·드래그·스크롤
+python test/export_test.py . out_export   # 썸네일 선택(클릭/Ctrl/Shift/Ctrl+A), 우클릭 내보내기(PDF/엑셀/한글/이미지)
 python test/convert_test.py . out_conv   # 변환: 엑셀 표·병합 셀, 한글(.hwpx 구조, 한컴 한글이 있으면 열기·.hwp 저장), 이미지 DPI, 스캔 PDF, 변환 창
 ```
 
@@ -58,6 +60,12 @@ python test/convert_test.py . out_conv   # 변환: 엑셀 표·병합 셀, 한�
 - **한계:** 글자와 표 중심이라 그림·도형·글꼴·정확한 위치는 옮기지 않습니다. 다단, 선 없는 표, 복잡한 서식은 줄 단위 글자로 들어갈 수 있습니다. 스캔 PDF(글자 정보 없음)는 엑셀·한글로 옮길 내용이 없어서 이미지 변환만 됩니다(OCR 미포함).
 
 ## 변경 사항
+### 1.4.1
+- 썸네일에서 한 장 또는 여러 장(클릭, Ctrl+클릭, Shift+클릭, Ctrl+A)을 고른 뒤 오른쪽 클릭 → **내보내기** → PDF로(선택 페이지만 새 PDF) / 엑셀로 / 한글로 / 이미지로. 엑셀·한글·이미지는 변환 창이 선택 페이지 범위로 열림
+- 선택되지 않은 썸네일을 오른쪽 클릭하면 그 한 장만 선택, 선택된 썸네일을 오른쪽 클릭하면 여러 장 선택 유지(오른쪽 버튼은 드래그·선택 해제를 하지 않음)
+- 선택된 썸네일 표시를 더 진하게(파란 배경·테두리)
+- 기존 우클릭 메뉴(잘라내기·복사·붙여넣기·회전·지우기)는 그대로
+
 ### 1.4
 - 새 **변환** 탭(메뉴·툴바): 열린 PDF를 엑셀(.xlsx), 한글(.hwpx / .hwp), 이미지(PNG·JPG)로 저장. 화면에 보이는 그대로(합친 파일, 페이지 순서, 회전, 도장 포함) 변환하고, 다른 PDF 파일을 골라도 됨
 - 페이지 범위(전체, 현재 페이지, 1-3,5), 저장 위치, 이미지 DPI 선택, 진행 표시와 취소, 끝나면 폴더 열기. 같은 이름 파일이 있으면 덮어쓰지 않고 `이름 (2)`로 저장

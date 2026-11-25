@@ -35,6 +35,23 @@ def save_convert_preferences(**changes):
         pass
 
 
+def page_ranges_text(rows):
+    """0-based rows -> "1-3, 5" (the 페이지 범위 syntax)."""
+    pages = sorted({int(r) + 1 for r in rows})
+    parts, start, prev = [], None, None
+    for page in pages:
+        if start is None:
+            start = prev = page
+        elif page == prev + 1:
+            prev = page
+        else:
+            parts.append(f"{start}-{prev}" if prev > start else str(start))
+            start = prev = page
+    if start is not None:
+        parts.append(f"{start}-{prev}" if prev > start else str(start))
+    return ", ".join(parts)
+
+
 def open_folder(path, select_file=None):
     """Explorer at the result (the file selected when there is one)."""
     try:
@@ -74,7 +91,7 @@ class ConvertWorker(QThread):
 
 
 class ConvertDialog(QDialog):
-    def __init__(self, owner, initial_kind=KIND_EXCEL):
+    def __init__(self, owner, initial_kind=KIND_EXCEL, page_rows=None):
         super().__init__(owner)
         self.owner = owner
         self.worker = None
@@ -91,6 +108,8 @@ class ConvertDialog(QDialog):
         self.setStyleSheet(self.dialog_stylesheet())
         self.build_ui()
         self.use_document_source()
+        if page_rows and self.source is not None:
+            self.preset_pages(page_rows)
         self.select_kind(initial_kind if initial_kind in self.kind_buttons else KIND_EXCEL)
 
     # ---------------------------------------------------------------- UI
@@ -336,6 +355,12 @@ class ConvertDialog(QDialog):
         self.source_label.setText(f"<b>열린 문서</b>  {self.source['name']} ({len(refs)}쪽{edited})")
         self.current_page_radio.setEnabled(True)
         self.after_source_changed()
+
+    def preset_pages(self, rows):
+        """Opened from 썸네일 우클릭 > 내보내기: convert exactly the selected pages."""
+        self.range_edit.setText(page_ranges_text(rows))
+        self.range_radio.setChecked(True)
+        self.setWindowTitle(f"선택한 {len(set(rows))}쪽 내보내기")
 
     def choose_source_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "변환할 PDF 선택", self.output_dir_edit.text(), PDF_FILTER)

@@ -717,8 +717,8 @@ class PdfPreviewer(PdfExportMixin, QMainWindow):
                 border-radius: 8px;
             }
             #pageList::item:selected {
-                background: #dbeafe;
-                border: 1px solid #60a5fa;
+                background: #bfdbfe;
+                border: 1px solid #1d4ed8;
                 color: #0f172a;
             }
             #pageList::item:hover {
@@ -2823,12 +2823,48 @@ class PdfPreviewer(PdfExportMixin, QMainWindow):
     def convert_to_image(self):
         self.open_convert_dialog("image")
 
-    def open_convert_dialog(self, kind=None):
+    def export_selected_pages(self, kind):
+        """Thumbnail right-click > 내보내기: the selected pages (list order) -> a new PDF, or the 변환 window
+        (엑셀/한글/이미지) preset to exactly those pages."""
+        if self.page_list.count() == 0:
+            return None
+        rows = self.selected_page_rows()
+        if not rows:
+            return None
+        if kind == "pdf":
+            return self.export_selected_pages_pdf(rows)
+        return self.open_convert_dialog(kind, page_rows=rows)
+
+    def export_selected_pages_pdf(self, rows):
+        from kpdf_convert import unique_path
+        from kpdf_convert_dialog import load_convert_preferences, open_folder, page_ranges_text, save_convert_preferences
+
+        refs = self.page_refs_for_rows(rows)
+        source = Path(self.current_pdf_path or refs[0].path)
+        prefs = load_convert_preferences()
+        folder = prefs.get("output_dir") if prefs.get("output_dir") and Path(prefs["output_dir"]).is_dir() else str(source.parent)
+        label = page_ranges_text(rows).replace(", ", "_")
+        default_path = unique_path(Path(folder) / f"{source.stem}_p{label}.pdf")
+        output_path, _ = QFileDialog.getSaveFileName(self, f"선택한 {len(rows)}쪽을 PDF로 내보내기", str(default_path), PDF_FILTER)
+        if not output_path:
+            return None
+        if not output_path.lower().endswith(".pdf"):
+            output_path += ".pdf"
+        if not self.write_pdf_safely(output_path, refs, "내보내기 오류"):
+            return None
+        self.reload_if_overwritten(output_path)
+        save_convert_preferences(output_dir=str(Path(output_path).parent))
+        if prefs.get("open_folder", True):
+            open_folder(Path(output_path).parent, output_path)
+        self.set_status(f"{len(rows)}쪽을 PDF로 내보냄: {output_path}")
+        return output_path
+
+    def open_convert_dialog(self, kind=None, page_rows=None):
         """'변환' window (엑셀/한글/이미지) for the open document as shown (order, rotation, stamps) or another PDF.
         The toolbar button opens it on the last used format."""
         from kpdf_convert_dialog import ConvertDialog, load_convert_preferences  # loaded on first use: start-up stays fast
 
-        dialog = ConvertDialog(self, kind or load_convert_preferences().get("kind", "excel"))
+        dialog = ConvertDialog(self, kind or load_convert_preferences().get("kind", "excel"), page_rows=page_rows)
         self.convert_dialog = dialog
         try:
             dialog.exec_()

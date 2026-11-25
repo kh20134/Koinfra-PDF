@@ -1,12 +1,12 @@
 ﻿; Koinfra PDF - Inno Setup 6 script
 ; Build: pyinstaller --distpath dist_installer --workpath build_installer KoinfraPDFEdit_installer.spec
-;        "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" KoinfraPDF.iss   ->  installer\KoinfraPDF_Setup_1.4.exe
+;        "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" KoinfraPDF.iss   ->  installer\KoinfraPDF_Setup_1.4.1.exe
 ; Windows 10/11 protect the PDF default (UserChoice + hash): this installer never writes it. It registers
 ; Koinfra PDF as a PDF handler and, on the finish page, starts the Windows default-app flow where the user
 ; clicks '항상' / '기본값 설정' once.
 
 #define AppName "Koinfra PDF"
-#define AppVersion "1.4"
+#define AppVersion "1.4.1"
 #define AppPublisher "Korea Infra Management"
 #define AppExeName "KoinfraPDFEdit.exe"
 #define ProgId "Koinfra.PDFEdit.Document"
@@ -21,7 +21,7 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppPublisher}
-VersionInfoVersion=1.4.0.0
+VersionInfoVersion=1.4.1.0
 VersionInfoDescription={#AppName} 설치
 DefaultDirName={autopf}\Koinfra PDF
 DefaultGroupName=Koinfra PDF

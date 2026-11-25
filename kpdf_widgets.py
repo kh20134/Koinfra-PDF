@@ -12,6 +12,7 @@ class PageThumbnailList(QListWidget):
         self.owner = owner
         self.drop_indicator_row = None
         self.drag_rows = []
+        self.last_context_menu = None
         self.setAcceptDrops(True)
         self.setDragEnabled(True)
         self.setDropIndicatorShown(True)
@@ -40,6 +41,17 @@ class PageThumbnailList(QListWidget):
         pressed_index = self.indexAt(event.pos())
         selected_rows = self.selected_page_rows()
 
+        if event.button() == Qt.RightButton:
+            # Right button never starts a drag or changes a multi-selection it lands on (the 내보내기/회전/지우기
+            # menu then acts on all selected pages); on an unselected page it selects just that page.
+            item = self.item(pressed_index.row()) if pressed_index.isValid() else None
+            if item is not None and not item.isSelected():
+                self.clearSelection()
+                self.setCurrentItem(item)
+            self.drag_rows = []
+            event.accept()
+            return
+
         if event.button() == Qt.LeftButton and event.modifiers() & Qt.ControlModifier and pressed_index.isValid():
             item = self.item(pressed_index.row())
             if item is not None:
@@ -56,6 +68,12 @@ class PageThumbnailList(QListWidget):
         else:
             self.drag_rows = []
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.RightButton:
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def mouseMoveEvent(self, event):
         if len(self.drag_rows) > 1:
@@ -98,6 +116,12 @@ class PageThumbnailList(QListWidget):
         super().keyPressEvent(event)
 
     def contextMenuEvent(self, event):
+        # Right-click on a page outside the selection selects just that page (Explorer-style);
+        # on a selected page the whole selection stays, so it can be exported/rotated/deleted together.
+        item = self.itemAt(event.pos())
+        if item is not None and not item.isSelected():
+            self.clearSelection()
+            self.setCurrentItem(item)
         menu = QMenu(self)
         cut_action = menu.addAction("\uc798\ub77c\ub0b4\uae30")
         copy_action = menu.addAction("\ubcf5\uc0ac\ud558\uae30")
@@ -107,8 +131,19 @@ class PageThumbnailList(QListWidget):
         rotate_left_action = menu.addAction("\uc67c\ucabd \ud68c\uc804")
         menu.addSeparator()
         delete_action = menu.addAction("\uc9c0\uc6b0\uae30")
+        menu.addSeparator()
+        selected_count = len({index.row() for index in self.selectedIndexes()})
+        export_menu = menu.addMenu(make_tool_icon("convert"), f"내보내기 (선택 {selected_count}쪽)" if selected_count else "내보내기")
+        export_actions = [
+            (export_menu.addAction(make_tool_icon("extract"), "PDF로… (선택 페이지만 새 PDF)"), "pdf"),
+            (export_menu.addAction(make_tool_icon("conv_excel"), "엑셀로… (.xlsx)"), "excel"),
+            (export_menu.addAction(make_tool_icon("conv_hwp"), "한글로… (.hwpx/.hwp)"), "hwp"),
+            (export_menu.addAction(make_tool_icon("conv_image"), "이미지로… (PNG/JPG)"), "image"),
+        ]
+        self.last_context_menu = menu
 
         has_selection = bool(self.selectedIndexes())
+        export_menu.setEnabled(has_selection)
         cut_action.setEnabled(has_selection)
         copy_action.setEnabled(has_selection)
         rotate_right_action.setEnabled(has_selection)
@@ -129,6 +164,11 @@ class PageThumbnailList(QListWidget):
             self.owner.rotate_selected_pages_left()
         elif selected_action == delete_action:
             self.owner.delete_selected_pages()
+        else:
+            for action, kind in export_actions:
+                if selected_action is not None and selected_action == action:
+                    self.owner.export_selected_pages(kind)
+                    break
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if self.has_pdf_urls(event):
