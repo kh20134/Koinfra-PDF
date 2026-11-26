@@ -1,8 +1,8 @@
 # Koinfra PDF
 
 > ## ⬇️ 다운로드
-> **[KoinfraPDF_Setup_1.4.4.exe 바로 받기](https://github.com/kh20134/Koinfra-PDF/raw/main/KoinfraPDF_Setup_1.4.4.exe)** (Windows 10/11, 약 43MB)
-> · 저장소 맨 위의 [`KoinfraPDF_Setup_1.4.4.exe`](KoinfraPDF_Setup_1.4.4.exe) · [최신 릴리스](https://github.com/kh20134/Koinfra-PDF/releases/latest)
+> **[KoinfraPDF_Setup_1.4.5.exe 바로 받기](https://github.com/kh20134/Koinfra-PDF/raw/main/KoinfraPDF_Setup_1.4.5.exe)** (Windows 10/11, 약 43MB)
+> · 저장소 맨 위의 [`KoinfraPDF_Setup_1.4.5.exe`](KoinfraPDF_Setup_1.4.5.exe) · [최신 릴리스](https://github.com/kh20134/Koinfra-PDF/releases/latest)
 
 Windows용 PDF 편집기(PyQt5)입니다. 여러 PDF를 합치고 페이지를 정리하며, 도장과 결재란을 넣어 저장할 수 있습니다.
 
@@ -18,7 +18,7 @@ Windows용 PDF 편집기(PyQt5)입니다. 여러 PDF를 합치고 페이지를 �
 - **PDF 기본 앱 설정:** Windows 앱 선택 창 또는 설정 화면으로 연결하고, 설정이 끝나면 자동으로 확인
 
 ## 설치 (일반 사용자)
-1. 위 **바로 받기** 링크(또는 [Releases](../../releases))에서 `KoinfraPDF_Setup_1.4.4.exe`를 받아 실행합니다.
+1. 위 **바로 받기** 링크(또는 [Releases](../../releases))에서 `KoinfraPDF_Setup_1.4.5.exe`를 받아 실행합니다.
 2. 마지막 화면의 **"PDF 기본 앱으로 설정"**을 체크한 채 마칩니다.
 3. 뜨는 창에서 **Koinfra PDF 선택 → '항상'**을 클릭합니다.
    - 설정 화면이 열리면 **.pdf → Koinfra PDF → '기본값 설정'**을 클릭합니다.
@@ -39,7 +39,7 @@ pip install pyinstaller
 pyinstaller --noconfirm --distpath dist_installer --workpath build_installer KoinfraPDFEdit_installer.spec
 
 # 2) 설치 파일 (Inno Setup 6)
-"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" KoinfraPDF.iss   # -> installer\KoinfraPDF_Setup_1.4.4.exe
+"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" KoinfraPDF.iss   # -> installer\KoinfraPDF_Setup_1.4.5.exe
 ```
 `KoinfraPDFEdit.spec`은 실행 파일 하나로 만드는(onefile) 빌드용입니다.
 
@@ -64,6 +64,11 @@ python test/convert_test.py . out_conv   # 변환: 엑셀 표·병합 셀, 한�
 - **한계:** 글자와 표 중심이라 그림·도형·글꼴·정확한 위치는 옮기지 않습니다. 다단, 선 없는 표, 복잡한 서식은 줄 단위 글자로 들어갈 수 있습니다. 스캔 PDF(글자 정보 없음)는 엑셀·한글로 옮길 내용이 없어서 이미지 변환만 됩니다(OCR 미포함).
 
 ## 변경 사항
+### 1.4.5
+- 아이콘의 'PDF'를 빨간 띠·픽셀 글자 대신 깔끔한 폰트(Pretendard Bold)의 남색 글자로 바꿔 문서 위쪽에 자연스럽게 배치
+- 흰 문서 + 회사(KOINFRA) 로고 + 만년필 디자인은 그대로, 24/16px은 로고 아래 'PDF' 글자로 단순화
+- 저장소 맨 위 설치 파일을 1.4.5로 교체
+
 ### 1.4.4
 - 아이콘에 빨간 **PDF** 띠를 넣어 바탕화면·탐색기의 작은 아이콘(48/32/24/16px)에서도 'PDF' 글자가 또렷하게 보이도록 변경(작은 크기는 픽셀 단위로 다듬은 글자)
 - 흰 문서 + 회사(KOINFRA) 로고 + 만년필 디자인은 그대로

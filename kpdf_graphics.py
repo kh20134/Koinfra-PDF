@@ -117,7 +117,7 @@ def render_approval_image(path, labels, width_pt, height_pt, signature_path=None
 
 
 def load_app_icon():
-    # Prefer the multi-size ICO (16~256 px frames: white document, KOINFRA symbol, pen and a red PDF band; 48 px and below use pixel-hinted PDF letters).
+    # Prefer the multi-size ICO (16~256 px frames: white document with navy "PDF" title, KOINFRA symbol and pen; 48 px and below use simplified art).
     for icon_path in (APP_ICON2_ICO, APP_ICON_ICO):
         if not icon_path.is_file():
             continue
